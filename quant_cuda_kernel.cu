@@ -45,7 +45,7 @@ void vecquant3matmul_cuda(
   dim3 threads(BLOCKWIDTH);
 
   AT_DISPATCH_FLOATING_TYPES(
-    vec.type(), "vecquant3matmul_cuda", ([&] {
+    vec.scalar_type(), "vecquant3matmul_cuda", ([&] {
       VecQuant3MatMulKernel<<<blocks, threads>>>(
         vec.data<scalar_t>(), mat.data<int>(), mul.data<scalar_t>(),
         scales.data<scalar_t>(), zeros.data<scalar_t>(),
