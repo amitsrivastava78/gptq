@@ -21,7 +21,7 @@ def get_opt(model):
     return model
 
 @torch.no_grad()
-def opt_sequential(model, dataloader, dev):
+def opt_sequential(model, dataloader, dev, quantization_type='gptq'):
     print('Starting ...')
 
     use_cache = model.config.use_cache
@@ -76,7 +76,6 @@ def opt_sequential(model, dataloader, dev):
     quantizers = {}
     for i in range(len(layers)):
         layer = layers[i].to(dev)
-
         subset = find_layers(layer)
         gptq = {}
         for name in subset:
@@ -101,10 +100,29 @@ def opt_sequential(model, dataloader, dev):
         for name in subset:
             print(i, name)
             print('Quantizing ...')
-            gptq[name].fasterquant(
-                percdamp=args.percdamp, groupsize=args.groupsize, actorder=args.act_order, static_groups=args.static_groups
-            )
-            quantizers['model.decoder.layers.%d.%s' % (i, name)] = gptq[name].quantizer
+            if quantization_type == 'gptq':
+                gptq[name].fasterquant(
+                    percdamp=args.percdamp, groupsize=args.groupsize, actorder=args.act_order, static_groups=args.static_groups
+                )
+                quantizers['model.decoder.layers.%d.%s' % (i, name)] = gptq[name].quantizer
+            elif quantization_type == 'simple':
+                # Simple quantization: just round weights
+                W = subset[name].weight.data
+                w_min = W.min()
+                w_max = W.max()
+                max_val = (2 ** args.wbits) - 1
+                scale = (w_max - w_min) / max_val
+                zero_point = w_min
+                quantized = torch.round((W - zero_point) / scale)
+                quantized = torch.clamp(quantized, 0, max_val)
+                dequantized = quantized.float() * scale + zero_point
+                subset[name].weight.data = dequantized.to(W.dtype)
+                # Optionally, store quantization params for analysis
+                quantizer = Quantizer()
+                quantizer.scale = scale
+                quantizer.zero = zero_point
+                quantizer.maxq = max_val
+                quantizers['model.decoder.layers.%d.%s' % (i, name)] = quantizer
             gptq[name].free()
         for j in range(args.nsamples):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
@@ -432,6 +450,10 @@ if __name__ == '__main__':
         '--static-groups', action='store_true',
         help='Whether to use static groups; recommended when using `--actorder` for more efficient inference.'
     )
+    parser.add_argument(
+        '--quantization-type', choices=['gptq', 'simple'], default='gptq',
+        help='Type of quantization to use: gptq (sophisticated) or simple (basic rounding)'
+    )
 
     args = parser.parse_args()
 
@@ -447,7 +469,7 @@ if __name__ == '__main__':
 
     if args.wbits < 16 and not args.nearest:
         tick = time.time()
-        quantizers = opt_sequential(model, dataloader, DEV)
+        quantizers = opt_sequential(model, dataloader, DEV, quantization_type=args.quantization_type)
         print(time.time() - tick)
 
     if args.benchmark:
