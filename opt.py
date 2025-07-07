@@ -117,12 +117,12 @@ def opt_sequential(model, dataloader, dev, quantization_type='gptq'):
                 quantized = torch.clamp(quantized, 0, max_val)
                 dequantized = quantized.float() * scale + zero_point
                 subset[name].weight.data = dequantized.to(W.dtype)
-                # Optionally, store quantization params for analysis
-                quantizer = Quantizer()
-                quantizer.scale = scale
-                quantizer.zero = zero_point
-                quantizer.maxq = max_val
-                quantizers['model.decoder.layers.%d.%s' % (i, name)] = quantizer
+                # Store quantization params for analysis
+                quantizers['model.decoder.layers.%d.%s' % (i, name)] = {
+                    'scale': scale,
+                    'zero': zero_point,
+                    'maxq': max_val
+                }
             gptq[name].free()
         for j in range(args.nsamples):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
