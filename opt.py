@@ -495,5 +495,6 @@ if __name__ == '__main__':
         opt_eval(model, testloader, DEV)
 
     if args.save:
-        opt_pack3(model, quantizers)
+        if args.quantization_type == 'gptq':
+            opt_pack3(model, quantizers)
         torch.save(model.state_dict(), args.save) 
