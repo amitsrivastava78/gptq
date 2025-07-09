@@ -261,31 +261,26 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 self.dense_layer = dense_layer
                 self.gptq_obj = gptq_obj
             def call(self, inputs, **kwargs):
+                # If input is a dict, extract hidden_states
                 if isinstance(inputs, dict) and 'hidden_states' in inputs:
                     inputs = inputs['hidden_states']
-                # Prefer static shape, fallback to dynamic if needed
                 input_shape = tf.shape(inputs)
-                static_shape = inputs.shape
-                if len(static_shape) == 3 and None not in static_shape:
-                    batch, seq, hidden = static_shape
-                    flat_inputs = tf.reshape(inputs, [-1, static_shape[-1]])
-                    print("DenseHook (static) flat_inputs shape:", flat_inputs.shape)
-                    print("DenseHook dense kernel shape:", self.dense_layer.kernel.shape)
-                    outputs = self.dense_layer(flat_inputs, **kwargs)
-                    outputs = tf.reshape(outputs, [batch, seq, -1])
-                elif tf.rank(inputs) == 3:
+                # Use static rank if available, else dynamic
+                rank = inputs.shape.rank if inputs.shape.rank is not None else tf.rank(inputs)
+                print("DenseHook input shape before flatten:", input_shape)
+                if rank == 3:
                     batch = input_shape[0]
                     seq = input_shape[1]
                     hidden = input_shape[2]
-                    flat_inputs = tf.reshape(inputs, [-1, input_shape[2]])
-                    print("DenseHook (dynamic) flat_inputs shape:", flat_inputs.shape)
-                    print("DenseHook dense kernel shape:", self.dense_layer.kernel.shape)
+                    flat_inputs = tf.reshape(inputs, [-1, hidden])
+                    print("DenseHook flat_inputs shape:", tf.shape(flat_inputs))
                     outputs = self.dense_layer(flat_inputs, **kwargs)
-                    outputs = tf.reshape(outputs, [batch, seq, -1])
+                    out_dim = tf.shape(outputs)[-1]
+                    outputs = tf.reshape(outputs, [batch, seq, out_dim])
+                    print("DenseHook output shape after reshape:", tf.shape(outputs))
                 else:
-                    print("DenseHook (else) input shape:", inputs.shape)
-                    print("DenseHook dense kernel shape:", self.dense_layer.kernel.shape)
                     outputs = self.dense_layer(inputs, **kwargs)
+                    print("DenseHook output shape (no reshape):", tf.shape(outputs))
                 self.gptq_obj.add_batch(inputs, outputs)
                 return outputs
 
