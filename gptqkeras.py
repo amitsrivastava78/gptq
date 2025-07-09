@@ -154,7 +154,7 @@ class GPTQ:
 
         # Note: No Conv1D equivalent in Keras, so we skip that transpose
         # After quantization logic, before assignment
-        print("W before assignment (first 5):", W.flatten()[:5])
+        print("Q before assignment (first 5):", Q.numpy().flatten()[:5])
         # Assign to kernel, not weights[0]
         self.layer.kernel.assign(tf.convert_to_tensor(Q, dtype=self.layer.kernel.dtype))
         if DEBUG:
