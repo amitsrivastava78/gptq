@@ -261,6 +261,28 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     print(f'Total quantizers: {len(quantizers)}')
     return quantizers
 
+# Add function to compare original vs quantized performance
+def compare_model_performance(original_model, quantized_model, testloader, args, tokenizer):
+    """Compare performance between original and quantized models"""
+    print("\n=== Performance Comparison ===")
+    
+    # Test original model
+    print("Testing original model...")
+    original_ppl = opt_eval_keras(original_model, testloader, args, tokenizer)
+    
+    # Test quantized model
+    print("\nTesting quantized model...")
+    quantized_ppl = opt_eval_keras(quantized_model, testloader, args, tokenizer)
+    
+    # Calculate degradation
+    degradation = ((quantized_ppl - original_ppl) / original_ppl) * 100
+    print(f"\n=== Results ===")
+    print(f"Original perplexity: {original_ppl:.2f}")
+    print(f"Quantized perplexity: {quantized_ppl:.2f}")
+    print(f"Degradation: {degradation:.2f}%")
+    
+    return original_ppl, quantized_ppl, degradation
+
 # 1. Download OPT-125M model and tokenizer (TensorFlow version)
 def load_opt_model(model_name="facebook/opt-125m"):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -273,8 +295,12 @@ def load_wikitext(nsamples=128):
         wikitext = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
         # Use a safe approach to select samples
         try:
-            return wikitext.select(range(nsamples))
-        except AttributeError:
+            if hasattr(wikitext, 'select'):
+                return wikitext.select(range(nsamples))
+            else:
+                # Fallback: convert to list and slice
+                return list(wikitext)[:nsamples]
+        except Exception:
             # Fallback: convert to list and slice
             return list(wikitext)[:nsamples]
     except Exception as e:
@@ -311,6 +337,10 @@ def opt_eval_keras(model, testloader, args, tokenizer=None):
     total_tokens = 0
     seqlen = args.seqlen
     pad_token_id = tokenizer.pad_token_id if tokenizer else 0
+    
+    # Add metrics tracking
+    batch_losses = []
+    batch_token_counts = []
 
     for i, batch in enumerate(testloader):
         print(f"Processing batch {i}")
@@ -338,9 +368,15 @@ def opt_eval_keras(model, testloader, args, tokenizer=None):
         nlls.append(nll)
         batch_tokens = np.sum(mask)
         total_tokens += batch_tokens
+        
+        # Store metrics for analysis
+        batch_losses.append(nll)
+        batch_token_counts.append(batch_tokens)
+        
         print(f"Batch {i}: NLL = {nll:.2f}, tokens = {batch_tokens}")
-        print("First few shift_labels:", shift_labels[:2])
-        print("First few mask values:", mask[:2])
+        if i < 3:  # Only print details for first few batches to avoid spam
+            print("First few shift_labels:", shift_labels[:2])
+            print("First few mask values:", mask[:2])
         if np.isnan(loss).any():
             print("NaN detected in loss!")
     
@@ -355,6 +391,14 @@ def opt_eval_keras(model, testloader, args, tokenizer=None):
         print("NaN detected in average loss!")
     ppl = np.exp(avg_loss)
     print(f'Perplexity: {ppl:.2f}')
+    
+    # Additional metrics
+    if len(batch_losses) > 1:
+        avg_batch_loss = np.mean(batch_losses)
+        std_batch_loss = np.std(batch_losses)
+        print(f"Average batch loss: {avg_batch_loss:.2f} ± {std_batch_loss:.2f}")
+        print(f"Loss range: [{np.min(batch_losses):.2f}, {np.max(batch_losses):.2f}]")
+    
     return ppl
 
 if __name__ == "__main__":
@@ -384,8 +428,12 @@ if __name__ == "__main__":
             raise ValueError(f"Unknown dataset: {args.dataset}")
         # Use a safe approach to select samples
         try:
-            dataset = dataset.select(range(args.nsamples))
-        except AttributeError:
+            if hasattr(dataset, 'select'):
+                dataset = dataset.select(range(args.nsamples))
+            else:
+                # Fallback: convert to list and slice
+                dataset = list(dataset)[:args.nsamples]
+        except Exception:
             # Fallback: convert to list and slice
             dataset = list(dataset)[:args.nsamples]
     except Exception as e:
@@ -409,25 +457,36 @@ if __name__ == "__main__":
     print("\n=== Quantization Verification ===")
     total_weight_change = 0
     total_weights = 0
+    quantized_layers = 0
+    
+    # More comprehensive weight analysis
     for layer in model.layers:
         if hasattr(layer, 'weights') and layer.weights:
             for weight in layer.weights:
                 if 'dense' in weight.name.lower() or 'linear' in weight.name.lower():
                     weight_np = weight.numpy()
                     weight_change = np.mean(np.abs(weight_np))
+                    weight_std = np.std(weight_np)
                     total_weight_change += weight_change
                     total_weights += 1
-                    print(f"Weight {weight.name}: mean abs value = {weight_change:.6f}")
+                    quantized_layers += 1
+                    print(f"Weight {weight.name}: mean={weight_change:.6f}, std={weight_std:.6f}")
     
     if total_weights > 0:
         avg_weight_change = total_weight_change / total_weights
-        print(f"Average weight change across {total_weights} layers: {avg_weight_change:.6f}")
+        print(f"\nQuantization Summary:")
+        print(f"- Quantized layers: {quantized_layers}")
+        print(f"- Average weight magnitude: {avg_weight_change:.6f}")
+        print(f"- Total weights analyzed: {total_weights}")
+        
         if avg_weight_change < 0.001:
-            print("WARNING: Very small weight changes detected. Quantization may not be working properly.")
+            print("⚠️  WARNING: Very small weight changes detected. Quantization may not be working properly.")
+        elif avg_weight_change < 0.01:
+            print("⚠️  WARNING: Small weight changes detected. Check quantization parameters.")
         else:
-            print("Quantization appears to be working (significant weight changes detected).")
+            print("✅ Quantization appears to be working (significant weight changes detected).")
     else:
-        print("No quantizable weights found. Check layer discovery.")
+        print("❌ No quantizable weights found. Check layer discovery.")
 
     datasets = ['wikitext2', 'ptb']
     for dataset_name in datasets:
