@@ -266,7 +266,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             # 3. Replace with hook
             setattr(parent, attr_name, DenseHook(dense_layer, gptq[name]))
 
-            # 4. Run block on calibration input
+            # Always call the block with the same input (inps, attention_mask)
             try:
                 if attention_mask is not None:
                     outs = layer(inps, attention_mask)
@@ -274,14 +274,28 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                     outs = layer(inps)
             except Exception as e:
                 print(f"Error processing layer {i}, {name}: {e}")
-                # Restore original layer before continuing
                 setattr(parent, attr_name, original_layer)
                 continue
 
-            # 5. Quantize
-            # ... (quantization code as before) ...
+            # Quantize if calibration succeeded
+            try:
+                print(f"Quantizing layer {i}, {name}")
+                original_weight = dense_layer.weights[0].numpy().copy()
+                gptq[name].fasterquant(
+                    blocksize=getattr(args, 'blocksize', 128),
+                    percdamp=args.percdamp,
+                    groupsize=args.groupsize,
+                    actorder=getattr(args, 'act_order', False),
+                    static_groups=getattr(args, 'static_groups', False)
+                )
+                quantizers[f'layer_{i}.{name}'] = gptq[name].quantizer
+                quantized_weight = dense_layer.weights[0].numpy()
+                print(f"Quantized weight range: [{np.min(quantized_weight):.6f}, {np.max(quantized_weight):.6f}]")
+                weight_change = np.mean(np.abs(original_weight - quantized_weight))
+                print(f"Average weight change: {weight_change:.6f}")
+            except Exception as e:
+                print(f"Error quantizing layer {i}, {name}: {e}")
 
-            # 6. Restore original layer
             setattr(parent, attr_name, original_layer)
         
         # Process the input through the hooked layer
