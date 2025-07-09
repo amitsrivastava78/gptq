@@ -625,7 +625,6 @@ def find_parent_and_attr(root, target_layer):
     return None
 
 def patch_decoder_layer(layer):
-    orig_call = layer.call
     def new_call(self, inputs, *args, **kwargs):
         # Unpack dict if needed
         if isinstance(inputs, dict):
@@ -634,10 +633,26 @@ def patch_decoder_layer(layer):
         else:
             hidden_states = inputs
             attention_mask = None
-        # Now call the original, but always pass tensors to submodules
-        # You may need to copy the original call logic here, or
-        # if the original call is robust, just call it with unpacked tensors
-        return orig_call({'hidden_states': hidden_states, 'attention_mask': attention_mask}, *args, **kwargs)
+
+        # This is the key: call submodules with tensors, not dicts!
+        # Re-implement the block's forward pass, but always pass tensors to submodules.
+        # This is a minimal version for OPT blocks:
+        x = hidden_states
+        # Self-attention
+        x = self.self_attn_layer_norm(x)
+        attn_outputs = self.self_attn(x, attention_mask=attention_mask, training=kwargs.get('training', False))
+        x = attn_outputs[0] if isinstance(attn_outputs, (tuple, list)) else attn_outputs
+        x = self.dropout_1(x, training=kwargs.get('training', False))
+        x = x + hidden_states
+
+        # Feed-forward
+        y = self.final_layer_norm(x)
+        y = self.fc2(self.fc1(y))
+        y = self.dropout(y, training=kwargs.get('training', False))
+        y = y + x
+
+        return {'hidden_states': y}
+
     layer.call = new_call.__get__(layer, layer.__class__)
 
 if __name__ == "__main__":
