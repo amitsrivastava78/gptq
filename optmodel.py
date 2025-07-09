@@ -91,22 +91,20 @@ def debug_layer_structure(module, max_depth=3, current_depth=0):
 
 # ActivationCatcher for Keras (equivalent to Catcher in PyTorch)
 class ActivationCatcher(keras.layers.Layer):
-    def __init__(self, module, cache):
+    def __init__(self, module):
         super().__init__()
         self.module = module
-        self.cache = cache
     def call(self, inputs, **kwargs):
         print("ActivationCatcher triggered!")
-        print("ActivationCatcher cache id:", id(self.cache))
-        self.cache['current_input'] = inputs
-        print("Cache after assignment:", self.cache)
+        GLOBAL_ACTIVATION_CACHE['current_input'] = inputs
+        print("Cache after assignment:", GLOBAL_ACTIVATION_CACHE)
         if 'attention_mask' in kwargs:
-            self.cache['attention_mask'] = kwargs['attention_mask']
+            GLOBAL_ACTIVATION_CACHE['attention_mask'] = kwargs['attention_mask']
         else:
             # Create a default attention mask if not provided
             batch_size = tf.shape(inputs)[0]
             seq_len = tf.shape(inputs)[1]
-            self.cache['attention_mask'] = tf.ones((batch_size, seq_len), dtype=tf.int32)
+            GLOBAL_ACTIVATION_CACHE['attention_mask'] = tf.ones((batch_size, seq_len), dtype=tf.int32)
         raise ValueError("Catcher activated")
 
 def inspect_model_structure(model, max_depth=3):
@@ -164,7 +162,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
 
     # Set up activation catcher for first layer
     original_first_layer = layers[0]
-    layers[0] = ActivationCatcher(original_first_layer, cache)
+    layers[0] = ActivationCatcher(original_first_layer)
     print("First layer after patching:", type(layers[0]))
     
     # Collect activations
