@@ -413,6 +413,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
 
             setattr(parent, attr_name, original_layer)
         
+        # After all Dense replacements in the layer:
+        if hasattr(layer, 'self_attn'):
+            patch_attention_module(layer.self_attn)
+
         # Process the input through the hooked layer
         try:
             inputs = {'hidden_states': inps}
@@ -765,6 +769,28 @@ def patch_decoder_layer(layer):
 
         return {'hidden_states': y}
     layer.call = new_call.__get__(layer, layer.__class__)
+
+def patch_attention_module(attn_module):
+    """
+    Monkey-patch the call method of TFOPTAttention to always use the current
+    k_proj, q_proj, v_proj, out_proj attributes (which may be hooks).
+    """
+    orig_call = attn_module.call
+
+    def new_call(self, hidden_states, attention_mask=None, **kwargs):
+        print("[DEBUG] Patched call for TFOPTAttention")
+        print("  k_proj type:", type(self.k_proj))
+        print("  q_proj type:", type(self.q_proj))
+        print("  v_proj type:", type(self.v_proj))
+        print("  out_proj type:", type(self.out_proj))
+        # Call the original method, but ensure it uses the current attributes
+        return orig_call(
+            self,
+            hidden_states,
+            attention_mask=attention_mask,
+            **kwargs
+        )
+    attn_module.call = new_call.__get__(attn_module, attn_module.__class__)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
