@@ -280,7 +280,11 @@ def print_quantization_summary(quantizers, model_name="OPT-125M"):
         for i, (name, quantizer) in enumerate(quantizers.items()):
             if i < 3:  # Show first 3
                 if hasattr(quantizer, 'scale'):
-                    print(f"  {name}: scale={quantizer.scale:.6f}, zero={quantizer.zero:.6f}, maxq={quantizer.maxq}")
+                    # Convert tensors to scalars for formatting (handle both TensorFlow and PyTorch)
+                    scale_val = quantizer.scale.numpy() if hasattr(quantizer.scale, 'numpy') else quantizer.scale
+                    zero_val = quantizer.zero.numpy() if hasattr(quantizer.zero, 'numpy') else quantizer.zero
+                    maxq_val = quantizer.maxq.numpy() if hasattr(quantizer.maxq, 'numpy') else quantizer.maxq
+                    print(f"  {name}: scale={scale_val:.6f}, zero={zero_val:.6f}, maxq={maxq_val}")
                 elif isinstance(quantizer, dict):
                     print(f"  {name}: scale={quantizer['scale']:.6f}, zero={quantizer['zero']:.6f}, maxq={quantizer['maxq']}")
     
