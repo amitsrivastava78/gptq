@@ -418,41 +418,56 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             print(f"Error processing layer {i} after all Dense replacements: {e}")
             continue
 
-
-                quantizers[f'layer_{i}.{name}'] = gptq[name].quantizer
+        # 8. Quantize all layers after calibration data is collected
+        for name, dense_layer in subset.items():
+            try:
+                print(f"Quantizing layer {i}, {name}")
+                original_weight = dense_layer.weights[0].numpy().copy()
                 
-                # Verify quantization actually happened
-                quantized_weight = subset[name].weights[0].numpy()
-                print(f"Quantized weight range: [{np.min(quantized_weight):.6f}, {np.max(quantized_weight):.6f}]")
-                weight_change = np.mean(np.abs(original_weight - quantized_weight))
-                print(f"Average weight change: {weight_change:.6f}")
-                
-            elif quantization_type == 'simple':
-                # Simple quantization: just round weights
-                W = subset[name].weights[0].numpy()
-                w_min = np.min(W)
-                w_max = np.max(W)
-                max_val = (2 ** args.wbits) - 1
-                scale = (w_max - w_min) / max_val
-                zero_point = w_min
-                quantized = np.round((W - zero_point) / scale)
-                quantized = np.clip(quantized, 0, max_val)
-                dequantized = quantized.astype(np.float32) * scale + zero_point
-                subset[name].weights[0].assign(dequantized)
-                # Store quantization params for analysis
-                quantizers[f'layer_{i}.{name}'] = {
-                    'scale': scale,
-                    'zero': zero_point,
-                    'maxq': max_val
-                }
-                
-                # Verify quantization actually happened
-                quantized_weight = subset[name].weights[0].numpy()
-                print(f"Simple quantized weight range: [{np.min(quantized_weight):.6f}, {np.max(quantized_weight):.6f}]")
-                weight_change = np.mean(np.abs(original_weight - quantized_weight))
-                print(f"Average weight change: {weight_change:.6f}")
-                
-            gptq[name].free()
+                if quantization_type == 'gptq':
+                    gptq[name].fasterquant(
+                        blocksize=getattr(args, 'blocksize', 128),
+                        percdamp=args.percdamp,
+                        groupsize=args.groupsize,
+                        actorder=getattr(args, 'act_order', False),
+                        static_groups=getattr(args, 'static_groups', False)
+                    )
+                    quantizers[f'layer_{i}.{name}'] = gptq[name].quantizer
+                    
+                    # Verify quantization actually happened
+                    quantized_weight = dense_layer.weights[0].numpy()
+                    print(f"Quantized weight range: [{np.min(quantized_weight):.6f}, {np.max(quantized_weight):.6f}]")
+                    weight_change = np.mean(np.abs(original_weight - quantized_weight))
+                    print(f"Average weight change: {weight_change:.6f}")
+                    
+                elif quantization_type == 'simple':
+                    # Simple quantization: just round weights
+                    W = dense_layer.weights[0].numpy()
+                    w_min = np.min(W)
+                    w_max = np.max(W)
+                    max_val = (2 ** args.wbits) - 1
+                    scale = (w_max - w_min) / max_val
+                    zero_point = w_min
+                    quantized = np.round((W - zero_point) / scale)
+                    quantized = np.clip(quantized, 0, max_val)
+                    dequantized = quantized.astype(np.float32) * scale + zero_point
+                    dense_layer.weights[0].assign(dequantized)
+                    # Store quantization params for analysis
+                    quantizers[f'layer_{i}.{name}'] = {
+                        'scale': scale,
+                        'zero': zero_point,
+                        'maxq': max_val
+                    }
+                    
+                    # Verify quantization actually happened
+                    quantized_weight = dense_layer.weights[0].numpy()
+                    print(f"Simple quantized weight range: [{np.min(quantized_weight):.6f}, {np.max(quantized_weight):.6f}]")
+                    weight_change = np.mean(np.abs(original_weight - quantized_weight))
+                    print(f"Average weight change: {weight_change:.6f}")
+                    
+                gptq[name].free()
+            except Exception as e:
+                print(f"Error quantizing layer {i}, {name}: {e}")
         
         # Process outputs again after quantization
         try:
