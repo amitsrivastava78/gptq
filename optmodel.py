@@ -250,7 +250,9 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 self.dense_layer = dense_layer
                 self.gptq_obj = gptq_obj
             def call(self, inputs, **kwargs):
-                # inputs should be a tensor, not a dict!
+                # If inputs is a dict, extract the tensor
+                if isinstance(inputs, dict) and 'hidden_states' in inputs:
+                    inputs = inputs['hidden_states']
                 outputs = self.dense_layer(inputs, **kwargs)
                 self.gptq_obj.add_batch(inputs, outputs)
                 return outputs
