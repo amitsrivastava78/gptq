@@ -316,18 +316,14 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             # 2. Save original layer
             original_layer = getattr(parent, attr_name)
 
-            # 3. Replace with hook
-            print(f"Replacing {name} in {parent.__class__.__name__} (attr: {attr_name}) with DenseHook")
-            setattr(parent, attr_name, DenseHook(dense_layer, gptq[name]))
-            
-            # 4. Create a comprehensive replacement strategy
-            # Store the hook instance for consistent replacement
+            # 3. Create hook instance
             hook_instance = DenseHook(dense_layer, gptq[name])
             
-            # Replace in the main layer
+            # 4. Replace with hook
+            print(f"Replacing {name} in {parent.__class__.__name__} (attr: {attr_name}) with DenseHook")
             setattr(parent, attr_name, hook_instance)
             
-            # Replace in all submodules recursively
+            # 5. Apply comprehensive replacement
             def replace_in_module(module, target_layer, hook):
                 for attr_name in dir(module):
                     if not attr_name.startswith('_'):
@@ -344,63 +340,37 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                     for submodule in module.submodules:
                         replace_in_module(submodule, target_layer, hook)
             
-                        # Apply comprehensive replacement
             replace_in_module(layer, dense_layer, hook_instance)
             
-            # If the Dense layer is in the attention submodule, replace it there
+            # 6. If the Dense layer is in the attention submodule, replace it there
             if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, name):
                 setattr(layer.self_attn, name, hook_instance)
                 print(f"[DEBUG] Replaced {name} in self_attn with DenseHook")
-            
-            # Always call the block with the same input (inps, attention_mask)
-            try:
-                print(f"Calling layer {i} with input shape: {inps.shape}")
-                print(f"[DEBUG] About to call layer {i} with {name} replaced")
-                print(f"[DEBUG] Checking if {name} is properly replaced in all submodules...")
-                
-                # Debug: Check if the layer is properly replaced everywhere
-                def check_replacement(module, target_layer, hook):
-                    for attr_name in dir(module):
-                        if not attr_name.startswith('_'):
-                            try:
-                                attr = getattr(module, attr_name)
-                                if attr is target_layer:
-                                    print(f"[DEBUG] WARNING: {name} still found as original in {module.__class__.__name__}.{attr_name}")
-                                elif attr is hook:
-                                    print(f"[DEBUG] OK: {name} properly replaced in {module.__class__.__name__}.{attr_name}")
-                            except Exception:
-                                pass
-                    
-                    if hasattr(module, 'submodules'):
-                        for submodule in module.submodules:
-                            check_replacement(submodule, target_layer, hook)
-                
-                check_replacement(layer, dense_layer, hook_instance)
-                
-                # DO NOT call the layer here!
-                pass  # just replace, do not call
-                
-                # inputs = {'hidden_states': inps}
-                # if attention_mask is not None:
-                #     inputs['attention_mask'] = attention_mask
-                # print(f"[DEBUG] Layer {i} inputs: {type(inputs)}")
-                # outs = layer(inputs)
-                # print(f"[DEBUG] Layer {i} returned: {type(outs)}")
-                # if isinstance(outs, (tuple, list)):
-                #     inps = outs[0]
-                # elif isinstance(outs, dict) and 'hidden_states' in outs:
-                #     inps = outs['hidden_states']
-                # else:
-                #     inps = outs
-                # print(f"Layer {i} output shape: {inps.shape}")
-            except Exception as e:
-                print(f"Error processing layer {i}, {name}: {e}")
-                print(f"Error occurred in layer call, not in DenseHook")
-                print(f"[DEBUG] Error details: {type(e).__name__}: {str(e)}")
-                setattr(parent, attr_name, original_layer)
-                continue
+        
+        # After all Dense replacements in the layer:
+        if hasattr(layer, 'self_attn'):
+            patch_attention_module(layer.self_attn)
 
-            # Quantize if calibration succeeded
+        # 7. Call the layer ONCE to collect calibration data
+        try:
+            print(f"Calling layer {i} after all Dense replacements, input shape: {inps.shape}")
+            inputs = {'hidden_states': inps}
+            if attention_mask is not None:
+                inputs['attention_mask'] = attention_mask
+            outs = layer(inputs)
+            if isinstance(outs, (tuple, list)):
+                inps = outs[0]
+            elif isinstance(outs, dict) and 'hidden_states' in outs:
+                inps = outs['hidden_states']
+            else:
+                inps = outs
+            print(f"Layer {i} output shape: {inps.shape}")
+        except Exception as e:
+            print(f"Error processing layer {i} after all Dense replacements: {e}")
+            continue
+
+        # 8. Quantize all layers after calibration data is collected
+        for name, dense_layer in subset.items():
             try:
                 print(f"Quantizing layer {i}, {name}")
                 original_weight = dense_layer.weights[0].numpy().copy()
@@ -419,7 +389,13 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             except Exception as e:
                 print(f"Error quantizing layer {i}, {name}: {e}")
 
-            setattr(parent, attr_name, original_layer)
+        # 9. Restore original layers after quantization
+        for name, dense_layer in subset.items():
+            result = find_parent_and_attr(layer, dense_layer)
+            if result is not None:
+                parent, attr_name = result
+                original_layer = getattr(parent, attr_name)
+                setattr(parent, attr_name, original_layer)
         
         # After all Dense replacements in the layer:
         if hasattr(layer, 'self_attn'):
@@ -442,21 +418,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             print(f"Error processing layer {i} after all Dense replacements: {e}")
             continue
 
-        # Quantize layers
-        for name in subset:
-            print(f"Quantizing layer {i}, {name}")
-            original_weight = subset[name].weights[0].numpy().copy()
-            print(f"Original weight shape: {original_weight.shape}")
-            print(f"Original weight range: [{np.min(original_weight):.6f}, {np.max(original_weight):.6f}]")
-            
-            if quantization_type == 'gptq':
-                gptq[name].fasterquant(
-                    blocksize=getattr(args, 'blocksize', 128),
-                    percdamp=args.percdamp,
-                    groupsize=args.groupsize,
-                    actorder=getattr(args, 'act_order', False),
-                    static_groups=getattr(args, 'static_groups', False)
-                )
+
                 quantizers[f'layer_{i}.{name}'] = gptq[name].quantizer
                 
                 # Verify quantization actually happened
@@ -792,13 +754,46 @@ def patch_attention_module(attn_module):
         print("  q_proj type:", type(self.q_proj))
         print("  v_proj type:", type(self.v_proj))
         print("  out_proj type:", type(self.out_proj))
-        # Call the original method, but ensure it uses the current attributes
-        return orig_call(
-            self,
-            hidden_states,
-            attention_mask=attention_mask,
-            **kwargs
-        )
+        
+        # Manually implement the attention forward pass to avoid the tensor conversion error
+        batch_size = tf.shape(hidden_states)[0]
+        seq_len = tf.shape(hidden_states)[1]
+        
+        # Project to Q, K, V
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+        
+        # Reshape for attention
+        query_states = tf.reshape(query_states, [batch_size, seq_len, self.num_heads, -1])
+        key_states = tf.reshape(key_states, [batch_size, seq_len, self.num_heads, -1])
+        value_states = tf.reshape(value_states, [batch_size, seq_len, self.num_heads, -1])
+        
+        # Transpose for attention computation
+        query_states = tf.transpose(query_states, [0, 2, 1, 3])
+        key_states = tf.transpose(key_states, [0, 2, 1, 3])
+        value_states = tf.transpose(value_states, [0, 2, 1, 3])
+        
+        # Compute attention scores
+        attention_scores = tf.matmul(query_states, key_states, transpose_b=True)
+        attention_scores = attention_scores / tf.math.sqrt(tf.cast(tf.shape(key_states)[-1], tf.float32))
+        
+        if attention_mask is not None:
+            attention_scores = attention_scores + attention_mask
+        
+        attention_probs = tf.nn.softmax(attention_scores, axis=-1)
+        attention_probs = self.dropout(attention_probs, training=kwargs.get('training', False))
+        
+        # Apply attention to values
+        attention_output = tf.matmul(attention_probs, value_states)
+        attention_output = tf.transpose(attention_output, [0, 2, 1, 3])
+        attention_output = tf.reshape(attention_output, [batch_size, seq_len, -1])
+        
+        # Project output
+        attention_output = self.out_proj(attention_output)
+        
+        return attention_output
+    
     attn_module.call = new_call.__get__(attn_module, attn_module.__class__)
 
 if __name__ == "__main__":
