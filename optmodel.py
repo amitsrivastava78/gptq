@@ -15,7 +15,7 @@ def find_layers(module):
         if isinstance(module, keras.layers.Dense):
             layers[name] = module
             print(f"Found Dense layer: {name} -> {module.name}")
-        # Check for specific OPT model structure
+        # Check for specific OPT model structure - TensorFlow OPT has different structure
         elif hasattr(module, 'layers'):
             for i, child in enumerate(module.layers):
                 child_name = f"{name}.layers[{i}]" if name else f"layers[{i}]"
@@ -26,13 +26,15 @@ def find_layers(module):
                 child_name = f"{name}.submodules[{i}]" if name else f"submodules[{i}]"
                 _find_layers_recursive(child, child_name)
         # Check for specific attributes that might contain Dense layers
-        for attr_name in ['dense', 'linear', 'fc', 'projection', 'q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj']:
+        for attr_name in ['dense', 'linear', 'fc', 'projection', 'q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'self_attn', 'fc1', 'fc2']:
             if hasattr(module, attr_name):
                 attr = getattr(module, attr_name)
                 if isinstance(attr, keras.layers.Dense):
                     layers[f"{name}.{attr_name}" if name else attr_name] = attr
                     print(f"Found Dense layer in {attr_name}: {name}.{attr_name}" if name else attr_name)
                 elif hasattr(attr, 'submodules'):
+                    _find_layers_recursive(attr, f"{name}.{attr_name}" if name else attr_name)
+                elif hasattr(attr, 'layers'):
                     _find_layers_recursive(attr, f"{name}.{attr_name}" if name else attr_name)
         # Check for TFLayerNorm and other layers that might contain Dense layers
         if hasattr(module, 'layers'):
@@ -54,6 +56,11 @@ class ActivationCatcher(keras.layers.Layer):
         self.cache['current_input'] = inputs
         if 'attention_mask' in kwargs:
             self.cache['attention_mask'] = kwargs['attention_mask']
+        else:
+            # Create a default attention mask if not provided
+            batch_size = tf.shape(inputs)[0]
+            seq_len = tf.shape(inputs)[1]
+            self.cache['attention_mask'] = tf.ones((batch_size, seq_len), dtype=tf.int32)
         raise ValueError("Catcher activated")
 
 def inspect_model_structure(model, max_depth=3):
@@ -115,7 +122,8 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     for batch in dataloader:
         batch = batch.astype('int32')
         try:
-            _ = model(batch)
+            # For TensorFlow models, we need to pass input_ids as a dictionary
+            _ = model({'input_ids': batch})
             activation_count += 1
             if activation_count % 10 == 0:
                 print(f"Collected activations from {activation_count} batches")
@@ -155,7 +163,11 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             print(f"No Dense layers found in layer {i}, skipping quantization")
             # Process the layer normally
             try:
-                inps = layer(inps, attention_mask=attention_mask)
+                # For TensorFlow models, we need to pass inputs as a dictionary
+                if attention_mask is not None:
+                    inps = layer(inps, attention_mask=attention_mask)
+                else:
+                    inps = layer(inps)
             except Exception as e:
                 print(f"Error processing layer {i}: {e}")
             continue
@@ -189,7 +201,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         
         # Process the input through the hooked layer
         try:
-            outs = hooked_layer(inps, attention_mask=attention_mask)
+            if attention_mask is not None:
+                outs = hooked_layer(inps, attention_mask=attention_mask)
+            else:
+                outs = hooked_layer(inps)
         except Exception as e:
             print(f"Error processing layer {i}: {e}")
             continue
@@ -246,7 +261,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         
         # Process outputs again after quantization
         try:
-            outs = layer(inps, attention_mask=attention_mask)
+            if attention_mask is not None:
+                outs = layer(inps, attention_mask=attention_mask)
+            else:
+                outs = layer(inps)
         except Exception as e:
             print(f"Error processing layer {i} after quantization: {e}")
             continue
