@@ -9,49 +9,173 @@ import tensorflow as tf
 print(tf.config.list_physical_devices('GPU'))
 
 def find_layers(module):
-    # Recursively find all Dense layers in the module
-    return {f"dense_{i}": l for i, l in enumerate(module.submodules) if isinstance(l, keras.layers.Dense)}
+    # Recursively find all Dense layers in the module (equivalent to Linear layers in PyTorch)
+    layers = {}
+    def _find_layers_recursive(module, name=''):
+        if isinstance(module, keras.layers.Dense):
+            layers[name] = module
+        for i, child in enumerate(module.submodules):
+            child_name = f"{name}.{i}" if name else str(i)
+            _find_layers_recursive(child, child_name)
+    _find_layers_recursive(module)
+    return layers
 
-# ActivationCatcher as before
+# ActivationCatcher for Keras (equivalent to Catcher in PyTorch)
 class ActivationCatcher(keras.layers.Layer):
-    def __init__(self, layer, gptq_obj, **kwargs):
-        super().__init__(**kwargs)
-        self.layer = layer
-        self.gptq_obj = gptq_obj
+    def __init__(self, module, cache):
+        super().__init__()
+        self.module = module
+        self.cache = cache
     def call(self, inputs, **kwargs):
-        outputs = self.layer(inputs, **kwargs)
-        self.gptq_obj.add_batch(inputs, outputs)
-        return outputs
+        self.cache['i'] = self.cache.get('i', 0)
+        self.cache['inps'][self.cache['i']] = inputs
+        self.cache['i'] += 1
+        if 'attention_mask' in kwargs:
+            self.cache['attention_mask'] = kwargs['attention_mask']
+        raise ValueError("Catcher activated")
 
 def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     print('Starting ...')
+
+    # Disable cache for quantization
+    use_cache = getattr(model.config, 'use_cache', False)
+    model.config.use_cache = False
+    
+    # For TensorFlow models, we need to find the transformer layers
+    # This is more complex than PyTorch since the structure is different
+    layers = []
+    
+    # Try to find transformer layers in the model
+    for layer in model.submodules:
+        if hasattr(layer, 'layers') and len(layer.layers) > 0:
+            # This might be a transformer block
+            layers = layer.layers
+            break
+    
+    if not layers:
+        # Fallback: look for layers with attention mechanisms
+        layers = []
+        for layer in model.submodules:
+            if hasattr(layer, 'attention') or hasattr(layer, 'self_attn') or hasattr(layer, 'multi_head_attention'):
+                layers.append(layer)
+    
+    if not layers:
+        print("Warning: Could not find transformer layers, using all submodules")
+        layers = list(model.submodules)
+
+    # Create input cache
+    dtype = tf.float32  # Default dtype for TensorFlow
+    inps = tf.zeros((args.nsamples, args.seqlen, args.hidden_size), dtype=dtype)
+    cache = {'i': 0, 'attention_mask': None, 'inps': inps}
+
+    # Set up activation catcher for first layer
+    original_first_layer = layers[0]
+    layers[0] = ActivationCatcher(original_first_layer, cache)
+    
+    # Collect activations
     print('Calibrating on token IDs...')
     for batch in dataloader:
         batch = batch.astype('int32')
-        _ = model(batch)
+        try:
+            _ = model(batch)
+        except ValueError:
+            pass
     print('Calibration complete.')
+    
+    # Restore first layer
+    layers[0] = original_first_layer
 
-    # Now quantize all Dense layers
+    # Create output tensor
+    outs = tf.zeros_like(inps)
+    attention_mask = cache['attention_mask']
+
+    print('Ready.')
+
     quantizers = {}
-    for i, layer in enumerate(model.submodules):
-        if isinstance(layer, keras.layers.Dense):
-            gptq = GPTQ(layer)
-            # Create quantizer instance and assign it
+    for i in range(len(layers)):
+        layer = layers[i]
+        subset = find_layers(layer)
+        gptq = {}
+        
+        for name in subset:
+            gptq[name] = GPTQ(subset[name])
             quantizer = Quantizer()
             quantizer.configure(
                 args.wbits, perchannel=True, sym=args.sym, mse=False, trits=getattr(args, 'trits', False)
             )
-            gptq.quantizer = quantizer
-            print(f"Quantizing layer {i} ({layer.name}) ...")
-            gptq.fasterquant(
-                blocksize=getattr(args, 'blocksize', 128),
-                percdamp=args.percdamp,
-                groupsize=args.groupsize,
-                actorder=getattr(args, 'act_order', False),
-                static_groups=getattr(args, 'static_groups', False)
-            )
-            quantizers[layer.name] = gptq.quantizer
-            gptq.free()
+            gptq[name].quantizer = quantizer
+
+        # For Keras, we need to use a different approach since there's no register_forward_hook
+        # We'll use a custom layer wrapper
+        class HookLayer(keras.layers.Layer):
+            def __init__(self, layer, gptq_dict):
+                super().__init__()
+                self.layer = layer
+                self.gptq_dict = gptq_dict
+            def call(self, inputs, **kwargs):
+                outputs = self.layer(inputs, **kwargs)
+                for name, gptq_obj in self.gptq_dict.items():
+                    gptq_obj.add_batch(inputs, outputs)
+                return outputs
+        
+        # Apply hooks
+        hooked_layer = HookLayer(layer, gptq)
+        
+        # Process all samples
+        for j in range(args.nsamples):
+            try:
+                outs = hooked_layer(inps[j:j+1], attention_mask=attention_mask)
+            except Exception as e:
+                print(f"Error processing sample {j}: {e}")
+                continue
+
+        # Quantize layers
+        for name in subset:
+            print(f"Layer {i}, {name}")
+            print('Quantizing ...')
+            if quantization_type == 'gptq':
+                gptq[name].fasterquant(
+                    blocksize=getattr(args, 'blocksize', 128),
+                    percdamp=args.percdamp,
+                    groupsize=args.groupsize,
+                    actorder=getattr(args, 'act_order', False),
+                    static_groups=getattr(args, 'static_groups', False)
+                )
+                quantizers[f'layer_{i}.{name}'] = gptq[name].quantizer
+            elif quantization_type == 'simple':
+                # Simple quantization: just round weights
+                W = subset[name].weights[0].numpy()
+                w_min = np.min(W)
+                w_max = np.max(W)
+                max_val = (2 ** args.wbits) - 1
+                scale = (w_max - w_min) / max_val
+                zero_point = w_min
+                quantized = np.round((W - zero_point) / scale)
+                quantized = np.clip(quantized, 0, max_val)
+                dequantized = quantized.astype(np.float32) * scale + zero_point
+                subset[name].weights[0].assign(dequantized)
+                # Store quantization params for analysis
+                quantizers[f'layer_{i}.{name}'] = {
+                    'scale': scale,
+                    'zero': zero_point,
+                    'maxq': max_val
+                }
+            gptq[name].free()
+        
+        # Process outputs again after quantization
+        for j in range(args.nsamples):
+            try:
+                outs = layer(inps[j:j+1], attention_mask=attention_mask)
+            except Exception as e:
+                print(f"Error processing sample {j} after quantization: {e}")
+                continue
+
+        # Swap inputs and outputs for next layer
+        inps, outs = outs, inps
+
+    # Restore cache setting
+    model.config.use_cache = use_cache
+    
     print('Quantization complete.')
     return quantizers
 
@@ -90,6 +214,7 @@ def opt_eval_keras(model, testloader, args, tokenizer=None):
     print('Evaluating ...')
     nsamples = 0
     nlls = []
+    total_tokens = 0
     seqlen = args.seqlen
     pad_token_id = tokenizer.pad_token_id if tokenizer else 0
 
@@ -117,11 +242,14 @@ def opt_eval_keras(model, testloader, args, tokenizer=None):
         loss = loss * mask  # zero out loss for padding tokens
         nll = np.sum(loss)
         nlls.append(nll)
-        total_tokens = np.sum(mask)
+        batch_tokens = np.sum(mask)
+        total_tokens += batch_tokens
+        print(f"Batch {i}: NLL = {nll:.2f}, tokens = {batch_tokens}")
         print("First few shift_labels:", shift_labels[:2])
         print("First few mask values:", mask[:2])
         if np.isnan(loss).any():
             print("NaN detected in loss!")
+    
     total_nll = np.sum(nlls)
     print(f"Total NLL: {total_nll}, Total tokens: {total_tokens}")
     if total_tokens == 0:

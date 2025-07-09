@@ -2,69 +2,89 @@ import math
 import time
 import tensorflow as tf
 import keras
+import numpy as np
 
 ops = tf  # Keras 3.0 ops API
 
 DEBUG = False
 
+# Disable TensorFlow optimizations for consistency
+tf.config.optimizer.set_jit(False)
+
 class GPTQ:
     def __init__(self, layer):
         self.layer = layer
-        W = ops.convert_to_tensor(layer.weights[0].numpy())
-        self.rows = W.shape[0]
-        self.columns = W.shape[1]
-        self.H = ops.zeros((self.columns, self.columns), dtype='float32')
+        # Get weight tensor (equivalent to layer.weight.data.clone())
+        W = tf.convert_to_tensor(layer.weights[0].numpy())
+        if isinstance(self.layer, keras.layers.Conv2D):
+            W = tf.reshape(W, [W.shape[0], -1])
+        # Note: No Conv1D equivalent in Keras, so we skip that check
+        self.rows = int(W.shape[0])
+        self.columns = int(W.shape[1])
+        self.H = tf.zeros((self.columns, self.columns), dtype=tf.float32)
         self.nsamples = 0
-        self.quantizer = None  # Initialize quantizer attribute
+        self.quantizer = None
 
     def add_batch(self, inp, out):
         if DEBUG:
             self.inp1 = inp
             self.out1 = out
         if len(inp.shape) == 2:
-            inp = ops.expand_dims(inp, 0)
+            inp = tf.expand_dims(inp, 0)
         tmp = inp.shape[0]
         if isinstance(self.layer, keras.layers.Dense):
             if len(inp.shape) == 3:
-                inp = ops.reshape(inp, (-1, inp.shape[-1]))
-            inp = ops.transpose(inp)
+                inp = tf.reshape(inp, [-1, inp.shape[-1]])
+            inp = tf.transpose(inp)
+        if isinstance(self.layer, keras.layers.Conv2D):
+            # Keras doesn't have Unfold, so we'll skip this for now
+            # This would need a custom implementation for Conv2D
+            pass
         self.H = self.H * (self.nsamples / (self.nsamples + tmp))
         self.nsamples += tmp
-        inp = math.sqrt(2 / self.nsamples) * ops.cast(inp, 'float32')
-        self.H = self.H + ops.matmul(inp, ops.transpose(inp))
+        inp = math.sqrt(2 / self.nsamples) * tf.cast(inp, tf.float32)
+        self.H = self.H + tf.matmul(inp, tf.transpose(inp))
 
     def fasterquant(self, blocksize=128, percdamp=.01, groupsize=-1, actorder=False, static_groups=False):
-        W = ops.convert_to_tensor(self.layer.weights[0].numpy(), dtype='float32')
+        W = tf.convert_to_tensor(self.layer.weights[0].numpy(), dtype=tf.float32)
+        if isinstance(self.layer, keras.layers.Conv2D):
+            W = tf.reshape(W, [W.shape[0], -1])
+        # Note: No Conv1D equivalent in Keras
+
         tick = time.time()
 
-        if not hasattr(self, 'quantizer') or not getattr(self.quantizer, 'ready', lambda: False)():
-            pass  # Quantizer logic placeholder
+        if self.quantizer is not None and self.quantizer.ready():
+            self.quantizer.find_params(W, weight=True)
 
         H = self.H
-        dead = ops.equal(tf.linalg.diag_part(H), 0)
-        H = ops.where(ops.expand_dims(dead, 0), ops.ones_like(H), H)
-        W = ops.where(ops.expand_dims(dead, 0), ops.zeros_like(W), W)
+        del self.H
+        dead = tf.equal(tf.linalg.diag_part(H), 0)
+        H = tf.where(tf.expand_dims(dead, 0), tf.ones_like(H), H)
+        W = tf.where(tf.expand_dims(dead, 0), tf.zeros_like(W), W)
+
+        if static_groups:
+            import copy
+            groups = []
+            for i in range(0, self.columns, groupsize):
+                quantizer = copy.deepcopy(self.quantizer)
+                quantizer.find_params(W[:, i:(i + groupsize)], weight=True)
+                groups.append(quantizer)
 
         if actorder:
-            # Use tf.linalg.diag_part instead of ops.diagonal
             perm = tf.argsort(tf.linalg.diag_part(H), direction='DESCENDING')
-            # Use tf.gather instead of ops.take
             W = tf.gather(W, perm, axis=1)
             H = tf.gather(tf.gather(H, perm, axis=0), perm, axis=1)
             invperm = tf.argsort(perm)
 
         Losses = tf.zeros_like(W)
-        Q = ops.zeros_like(W)
+        Q = tf.zeros_like(W)
 
-        # Compute dampening value
         damp = percdamp * tf.reduce_mean(tf.linalg.diag_part(H))
         diag = tf.range(self.columns)
-        # Add damp to diagonal
         H = tf.tensor_scatter_nd_add(H, tf.expand_dims(diag, 1), tf.fill([self.columns], damp))
-        # Cholesky decomposition and inversion
-        L = tf.linalg.cholesky(H)
-        Hinv = tf.linalg.cholesky_solve(L, tf.eye(self.columns, dtype=tf.float32))
-        H = Hinv  # For compatibility with rest of code
+        H = tf.linalg.cholesky(H)
+        H = tf.linalg.cholesky_solve(H, tf.eye(self.columns, dtype=tf.float32))
+        H = tf.linalg.cholesky(H)
         Hinv = H
 
         for i1 in range(0, self.columns, blocksize):
@@ -80,46 +100,48 @@ class GPTQ:
             for i in range(count):
                 w = W1[:, i]
                 d = Hinv1[i, i]
-                q = w  # Quantizer logic placeholder
 
-                # Update Q1: set column i to q
-                Q1 = tf.tensor_scatter_nd_update(Q1, tf.expand_dims(tf.range(Q1.shape[0]), 1), tf.expand_dims(q, 1)) if Q1.shape[1] == 1 else tf.concat([Q1[:, :i], tf.expand_dims(q, 1), Q1[:, i+1:]], axis=1)
+                if groupsize != -1:
+                    if not static_groups:
+                        if (i1 + i) % groupsize == 0:
+                            self.quantizer.find_params(W[:, (i1 + i):(i1 + i + groupsize)], weight=True)
+                    else:
+                        idx = i1 + i
+                        if actorder:
+                            idx = perm[idx]
+                        self.quantizer = groups[idx // groupsize]
 
-                # Update Losses1: set column i
-                loss_val = tf.square(w - q) / (d ** 2)
-                Losses1 = tf.tensor_scatter_nd_update(Losses1, tf.expand_dims(tf.range(Losses1.shape[0]), 1), tf.expand_dims(loss_val, 1)) if Losses1.shape[1] == 1 else tf.concat([Losses1[:, :i], tf.expand_dims(loss_val, 1), Losses1[:, i+1:]], axis=1)
+                # Use quantize function from quantkeras
+                from quantkeras import quantize
+                q = quantize(
+                    tf.expand_dims(w, 1), self.quantizer.scale, self.quantizer.zero, self.quantizer.maxq
+                )
+                q = tf.squeeze(q)
+                Q1 = tf.tensor_scatter_nd_update(Q1, tf.expand_dims(tf.range(Q1.shape[0]), 1), tf.expand_dims(q, 1))
+                Losses1 = tf.tensor_scatter_nd_update(Losses1, tf.expand_dims(tf.range(Losses1.shape[0]), 1), tf.expand_dims(tf.square(w - q) / (d ** 2), 1))
 
                 err1 = (w - q) / d
+                W1 = W1 - tf.expand_dims(err1, 1) * tf.expand_dims(Hinv1[i, i:], 0)
+                Err1 = tf.tensor_scatter_nd_update(Err1, tf.expand_dims(tf.range(Err1.shape[0]), 1), tf.expand_dims(err1, 1))
 
-                # Update W1: set column i
-                update_val = tf.matmul(tf.expand_dims(err1, 1), tf.expand_dims(Hinv1[i, i:], 0))
-                W1 = tf.concat([W1[:, :i], update_val, W1[:, i+1:]], axis=1) if W1.shape[1] > 1 else update_val
+            Q = tf.tensor_scatter_nd_update(Q, tf.expand_dims(tf.range(Q.shape[0]), 1), tf.expand_dims(Q1, 1))
+            Losses = tf.tensor_scatter_nd_update(Losses, tf.expand_dims(tf.range(Losses.shape[0]), 1), tf.expand_dims(Losses1 / 2, 1))
 
-                # Update Err1: set column i
-                # Update Err1: set column i
-                Err1 = tf.concat([Err1[:, :i], tf.expand_dims(err1, 1), Err1[:, i+1:]], axis=1)
+            W = W - tf.matmul(Err1, Hinv[i1:i2, i2:])
 
-                # Update Q and Losses using tensor_scatter_nd_update instead of ops.update
-                # Q: update columns i1:i2 with Q1
-                Q = tf.concat([Q[:, :i1], Q1, Q[:, i2:]], axis=1)
-                # Losses: update columns i1:i2 with Losses1 / 2
-                Losses = tf.concat([Losses[:, :i1], Losses1 / 2, Losses[:, i2:]], axis=1)
-                # W: update columns i2: with tf.matmul(Err1, Hinv[i1:i2, i2:])
-                W = tf.concat([W[:, :i2], tf.matmul(Err1, Hinv[i1:i2, i2:])], axis=1)
-
-                if DEBUG:
-                    self.layer.weights[0].assign(tf.concat([Q[:, :i2], W[:, i2:]], axis=1))
-                    print(tf.reduce_sum(tf.square(self.layer(self.inp1) - self.out1)))
-                    print(tf.reduce_sum(Losses))
+            if DEBUG:
+                self.layer.weights[0].assign(tf.concat([Q[:, :i2], W[:, i2:]], axis=1))
+                print(tf.reduce_sum(tf.square(self.layer(self.inp1) - self.out1)))
+                print(tf.reduce_sum(Losses))
 
         print('time %.2f' % (time.time() - tick))
-        print('error', ops.sum(Losses))
+        print('error', tf.reduce_sum(Losses))
 
         if actorder:
             Q = tf.gather(Q, invperm, axis=1)
 
+        # Note: No Conv1D equivalent in Keras, so we skip that transpose
         self.layer.weights[0].assign(tf.reshape(Q, self.layer.weights[0].shape))
-
         if DEBUG:
             print(tf.reduce_sum(tf.square(self.layer(self.inp1) - self.out1)))
 
