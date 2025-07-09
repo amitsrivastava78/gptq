@@ -252,9 +252,13 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 return outputs
 
         # Replace each Dense layer in the transformer block with a hooked version
-        for name in subset:
-            parent = layer # Assuming the layer itself is the parent for Dense layers
-            setattr(parent, name, DenseHook(getattr(parent, name), gptq[name]))
+        for name, dense_layer in subset.items():
+            result = find_parent_and_attr(layer, dense_layer)
+            if result is not None:
+                parent, attr_name = result
+                setattr(parent, attr_name, DenseHook(dense_layer, gptq[name]))
+            else:
+                print(f"Warning: Could not find parent for {name}")
         
         # Process the input through the hooked layer
         try:
@@ -530,6 +534,26 @@ def opt_eval_keras(model, testloader, args, tokenizer=None):
         print(f"Loss range: [{np.min(batch_losses):.2f}, {np.max(batch_losses):.2f}]")
     
     return ppl
+
+def find_parent_and_attr(root, target_layer):
+    for attr_name in dir(root):
+        if attr_name.startswith('_'):
+            continue
+        try:
+            attr = getattr(root, attr_name)
+            if attr is target_layer:
+                return root, attr_name
+        except Exception:
+            continue
+    # Also check inside submodules
+    if hasattr(root, 'submodules'):
+        for sub in root.submodules:
+            if sub is target_layer:
+                continue  # Don't check self
+            result = find_parent_and_attr(sub, target_layer)
+            if result is not None:
+                return result
+    return None
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
