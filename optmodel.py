@@ -97,7 +97,7 @@ class ActivationCatcher(keras.layers.Layer):
         self.cache = cache
     def call(self, inputs, **kwargs):
         print("ActivationCatcher triggered!")
-        print("ActivationCatcher inputs:", inputs)
+        print("ActivationCatcher cache id:", id(self.cache))
         self.cache['current_input'] = inputs
         print("Cache after assignment:", self.cache)
         if 'attention_mask' in kwargs:
