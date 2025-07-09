@@ -347,6 +347,11 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                         # Apply comprehensive replacement
             replace_in_module(layer, dense_layer, hook_instance)
             
+            # If the Dense layer is in the attention submodule, replace it there
+            if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, name):
+                setattr(layer.self_attn, name, hook_instance)
+                print(f"[DEBUG] Replaced {name} in self_attn with DenseHook")
+            
             # Always call the block with the same input (inps, attention_mask)
             try:
                 print(f"Calling layer {i} with input shape: {inps.shape}")
