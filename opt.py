@@ -422,11 +422,20 @@ def print_quantization_summary(quantizers, model_name="OPT-125M"):
         for i, (name, quantizer) in enumerate(quantizers.items()):
             if i < 3:  # Show first 3
                 if hasattr(quantizer, 'scale'):
-                    # Convert tensors to scalars for formatting
-                    scale_val = quantizer.scale.item() if hasattr(quantizer.scale, 'item') else quantizer.scale
-                    zero_val = quantizer.zero.item() if hasattr(quantizer.zero, 'item') else quantizer.zero
-                    maxq_val = quantizer.maxq.item() if hasattr(quantizer.maxq, 'item') else quantizer.maxq
-                    print(f"  {name}: scale={scale_val:.6f}, zero={zero_val:.6f}, maxq={maxq_val}")
+                    # Handle tensors that might be multi-dimensional
+                    if hasattr(quantizer.scale, 'numel') and quantizer.scale.numel() > 1:
+                        # Multi-dimensional tensor - show statistics
+                        scale_mean = quantizer.scale.mean().item()
+                        scale_std = quantizer.scale.std().item()
+                        zero_mean = quantizer.zero.mean().item() if hasattr(quantizer.zero, 'mean') else quantizer.zero.item()
+                        maxq_val = quantizer.maxq.item() if hasattr(quantizer.maxq, 'item') else quantizer.maxq
+                        print(f"  {name}: scale_mean={scale_mean:.6f}±{scale_std:.6f}, zero={zero_mean:.6f}, maxq={maxq_val}")
+                    else:
+                        # Scalar tensor
+                        scale_val = quantizer.scale.item() if hasattr(quantizer.scale, 'item') else quantizer.scale
+                        zero_val = quantizer.zero.item() if hasattr(quantizer.zero, 'item') else quantizer.zero
+                        maxq_val = quantizer.maxq.item() if hasattr(quantizer.maxq, 'item') else quantizer.maxq
+                        print(f"  {name}: scale={scale_val:.6f}, zero={zero_val:.6f}, maxq={maxq_val}")
                 elif isinstance(quantizer, dict):
                     print(f"  {name}: scale={quantizer['scale']:.6f}, zero={quantizer['zero']:.6f}, maxq={quantizer['maxq']}")
     

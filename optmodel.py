@@ -280,11 +280,37 @@ def print_quantization_summary(quantizers, model_name="OPT-125M"):
         for i, (name, quantizer) in enumerate(quantizers.items()):
             if i < 3:  # Show first 3
                 if hasattr(quantizer, 'scale'):
-                    # Convert tensors to scalars for formatting (handle both TensorFlow and PyTorch)
-                    scale_val = quantizer.scale.numpy() if hasattr(quantizer.scale, 'numpy') else quantizer.scale
-                    zero_val = quantizer.zero.numpy() if hasattr(quantizer.zero, 'numpy') else quantizer.zero
-                    maxq_val = quantizer.maxq.numpy() if hasattr(quantizer.maxq, 'numpy') else quantizer.maxq
-                    print(f"  {name}: scale={scale_val:.6f}, zero={zero_val:.6f}, maxq={maxq_val}")
+                    # Handle tensors that might be multi-dimensional
+                    if hasattr(quantizer.scale, 'numpy'):
+                        scale_np = quantizer.scale.numpy()
+                        if scale_np.size > 1:
+                            # Multi-dimensional tensor - show statistics
+                            scale_mean = float(scale_np.mean())
+                            scale_std = float(scale_np.std())
+                            zero_np = quantizer.zero.numpy() if hasattr(quantizer.zero, 'numpy') else quantizer.zero
+                            zero_mean = float(zero_np.mean()) if hasattr(zero_np, 'mean') else float(zero_np)
+                            maxq_np = quantizer.maxq.numpy() if hasattr(quantizer.maxq, 'numpy') else quantizer.maxq
+                            maxq_val = float(maxq_np)
+                            print(f"  {name}: scale_mean={scale_mean:.6f}±{scale_std:.6f}, zero={zero_mean:.6f}, maxq={maxq_val}")
+                        else:
+                            # Scalar tensor
+                            scale_val = float(scale_np)
+                            zero_val = float(quantizer.zero.numpy() if hasattr(quantizer.zero, 'numpy') else quantizer.zero)
+                            maxq_val = float(quantizer.maxq.numpy() if hasattr(quantizer.maxq, 'numpy') else quantizer.maxq)
+                            print(f"  {name}: scale={scale_val:.6f}, zero={zero_val:.6f}, maxq={maxq_val}")
+                    else:
+                        # Handle PyTorch tensors
+                        if hasattr(quantizer.scale, 'numel') and quantizer.scale.numel() > 1:
+                            scale_mean = quantizer.scale.mean().item()
+                            scale_std = quantizer.scale.std().item()
+                            zero_mean = quantizer.zero.mean().item() if hasattr(quantizer.zero, 'mean') else quantizer.zero.item()
+                            maxq_val = quantizer.maxq.item() if hasattr(quantizer.maxq, 'item') else quantizer.maxq
+                            print(f"  {name}: scale_mean={scale_mean:.6f}±{scale_std:.6f}, zero={zero_mean:.6f}, maxq={maxq_val}")
+                        else:
+                            scale_val = quantizer.scale.item() if hasattr(quantizer.scale, 'item') else quantizer.scale
+                            zero_val = quantizer.zero.item() if hasattr(quantizer.zero, 'item') else quantizer.zero
+                            maxq_val = quantizer.maxq.item() if hasattr(quantizer.maxq, 'item') else quantizer.maxq
+                            print(f"  {name}: scale={scale_val:.6f}, zero={zero_val:.6f}, maxq={maxq_val}")
                 elif isinstance(quantizer, dict):
                     print(f"  {name}: scale={quantizer['scale']:.6f}, zero={quantizer['zero']:.6f}, maxq={quantizer['maxq']}")
     

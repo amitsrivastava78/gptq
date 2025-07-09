@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 
 
-DEV = torch.device('cuda:0')
+# Use CPU if CUDA is not available, otherwise use CUDA
+DEV = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 
 def find_layers(module, layers=[nn.Conv2d, nn.Linear], name=''):

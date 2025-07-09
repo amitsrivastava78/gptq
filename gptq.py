@@ -148,7 +148,9 @@ class GPTQ:
                 print(torch.sum((self.layer(self.inp1) - self.out1) ** 2))
                 print(torch.sum(Losses))
 
-        torch.cuda.synchronize()
+        # Synchronize only if CUDA is available
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         print('time %.2f' % (time.time() - tick))
         print('error', torch.sum(Losses).item())
 
@@ -168,4 +170,6 @@ class GPTQ:
         self.H = None
         self.Losses = None
         self.Trace = None
-        torch.cuda.empty_cache()
+        # Clear cache only if CUDA is available
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
