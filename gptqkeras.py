@@ -138,7 +138,8 @@ class GPTQ:
             Losses = tf.concat([Losses[:, :to_python_int(i1)], Losses1 / 2, Losses[:, to_python_int(i2):]], axis=1)
             Err = tf.concat([Err[:, :to_python_int(i1)], Err1, Err[:, to_python_int(i2):]], axis=1)
 
-            W = W - tf.matmul(Err1, Hinv[i1:i2, i2:])
+            W_right = W[:, i2:] - tf.matmul(Err1, Hinv[i1:i2, i2:])
+            W = tf.concat([W[:, :i2], W_right], axis=1)
 
             if DEBUG:
                 self.layer.weights[0].assign(tf.concat([Q[:, :i2], W[:, i2:]], axis=1))
