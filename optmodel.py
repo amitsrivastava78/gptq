@@ -262,10 +262,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         
         # Process the input through the hooked layer
         try:
-            inputs = {"hidden_states": inps}
             if attention_mask is not None:
-                inputs["attention_mask"] = attention_mask
-            outs = layer(inputs)
+                outs = layer(inps, attention_mask)
+            else:
+                outs = layer(inps)
         except Exception as e:
             print(f"Error processing layer {i}: {e}")
             continue
@@ -322,10 +322,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         
         # Process outputs again after quantization
         try:
-            inputs = {"hidden_states": inps}
             if attention_mask is not None:
-                inputs["attention_mask"] = attention_mask
-            inps = layer(inputs)
+                outs = layer(inps, attention_mask)
+            else:
+                outs = layer(inps)
         except Exception as e:
             print(f"Error processing layer {i} after quantization: {e}")
             continue
