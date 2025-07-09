@@ -253,12 +253,36 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
 
         # Replace each Dense layer in the transformer block with a hooked version
         for name, dense_layer in subset.items():
+            # 1. Find parent and attribute name
             result = find_parent_and_attr(layer, dense_layer)
-            if result is not None:
-                parent, attr_name = result
-                setattr(parent, attr_name, DenseHook(dense_layer, gptq[name]))
-            else:
+            if result is None:
                 print(f"Warning: Could not find parent for {name}")
+                continue
+            parent, attr_name = result
+
+            # 2. Save original layer
+            original_layer = getattr(parent, attr_name)
+
+            # 3. Replace with hook
+            setattr(parent, attr_name, DenseHook(dense_layer, gptq[name]))
+
+            # 4. Run block on calibration input
+            try:
+                if attention_mask is not None:
+                    outs = layer(inps, attention_mask)
+                else:
+                    outs = layer(inps)
+            except Exception as e:
+                print(f"Error processing layer {i}, {name}: {e}")
+                # Restore original layer before continuing
+                setattr(parent, attr_name, original_layer)
+                continue
+
+            # 5. Quantize
+            # ... (quantization code as before) ...
+
+            # 6. Restore original layer
+            setattr(parent, attr_name, original_layer)
         
         # Process the input through the hooked layer
         try:
