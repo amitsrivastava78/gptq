@@ -270,6 +270,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 rank = len(input_shape)
                 print(f"DenseHook input shape: {input_shape}")
                 
+                # Debug: Check the Dense layer's weight shape
+                weight_shape = self.dense_layer.kernel.shape
+                print(f"DenseHook layer {self.dense_layer.name} weight shape: {weight_shape}")
+                
                 # For attention projections (k_proj, q_proj, v_proj, out_proj), keep 3D shape
                 # For MLP layers (fc1, fc2), flatten to 2D
                 layer_name = self.dense_layer.name
