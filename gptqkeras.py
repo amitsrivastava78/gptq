@@ -155,7 +155,13 @@ class GPTQ:
         # Note: No Conv1D equivalent in Keras, so we skip that transpose
         # After quantization logic, before assignment
         print("Q before assignment (first 5):", Q.numpy().flatten()[:5])
-        # Assign to kernel, not weights[0]
+        print("Q shape before assignment:", Q.shape)
+        print("Original kernel shape:", self.layer.kernel.shape)
+        # Ensure Q is 2D and matches kernel shape
+        if len(Q.shape) != 2:
+            Q = tf.reshape(Q, self.layer.kernel.shape)
+        elif Q.shape != self.layer.kernel.shape:
+            Q = tf.reshape(Q, self.layer.kernel.shape)
         self.layer.kernel.assign(tf.convert_to_tensor(Q, dtype=self.layer.kernel.dtype))
         if DEBUG:
             print(tf.reduce_sum(tf.square(self.layer(self.inp1) - self.out1)))
