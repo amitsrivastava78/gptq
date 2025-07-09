@@ -269,11 +269,13 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 print("DenseHook input shape before flatten:", input_shape)
                 def handle_3d():
                     shape = tf.shape(inputs)
-                    batch, seq, hidden = tf.unstack(shape)
+                    batch = tf.gather(shape, 0)
+                    seq = tf.gather(shape, 1)
+                    hidden = tf.gather(shape, 2)
                     flat_inputs = tf.reshape(inputs, [-1, hidden])
                     print("DenseHook flat_inputs shape:", tf.shape(flat_inputs))
                     outputs = self.dense_layer(flat_inputs, **kwargs)
-                    out_dim = tf.shape(outputs)[-1]
+                    out_dim = tf.gather(tf.shape(outputs), 1)
                     outputs = tf.reshape(outputs, [batch, seq, out_dim])
                     print("DenseHook output shape after reshape:", tf.shape(outputs))
                     return outputs
