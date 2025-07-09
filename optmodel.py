@@ -50,6 +50,8 @@ def find_layers_tf_opt(module, prefix=''):
     # Check if this module is a Dense layer
     if isinstance(module, keras.layers.Dense):
         layers[prefix.rstrip('.')] = module
+        return layers  # Don't recurse further if it's a Dense layer
+
     # Check all attributes (e.g., fc1, fc2, k_proj, etc.)
     for attr_name in dir(module):
         if attr_name.startswith('_'):
@@ -61,9 +63,17 @@ def find_layers_tf_opt(module, prefix=''):
         if isinstance(attr, keras.layers.Dense):
             layers[f"{prefix}{attr_name}"] = attr
         elif isinstance(attr, keras.layers.Layer) and attr is not module:
-            # Avoid infinite recursion
             sublayers = find_layers_tf_opt(attr, f"{prefix}{attr_name}.")
             layers.update(sublayers)
+        elif isinstance(attr, (list, tuple)):
+            for idx, item in enumerate(attr):
+                sublayers = find_layers_tf_opt(item, f"{prefix}{attr_name}[{idx}].")
+                layers.update(sublayers)
+        elif isinstance(attr, dict):
+            for k, v in attr.items():
+                sublayers = find_layers_tf_opt(v, f"{prefix}{attr_name}[{k}].")
+                layers.update(sublayers)
+
     # Check children in .layers
     if hasattr(module, 'layers'):
         for i, child in enumerate(module.layers):
