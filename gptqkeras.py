@@ -135,7 +135,7 @@ class GPTQ:
                 print(tf.reduce_sum(Losses))
 
         print('time %.2f' % (time.time() - tick))
-        print('error', tf.reduce_sum(Losses))
+        print('error', tf.reduce_sum(Losses).numpy())
 
         if actorder:
             Q = tf.gather(Q, invperm, axis=1)

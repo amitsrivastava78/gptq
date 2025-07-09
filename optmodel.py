@@ -261,6 +261,31 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     print(f'Total quantizers: {len(quantizers)}')
     return quantizers
 
+# Add function to print quantization summary
+def print_quantization_summary(quantizers, model_name="OPT-125M"):
+    """Print a summary of quantization results"""
+    print(f"\n=== Quantization Summary for {model_name} ===")
+    print(f"Total quantized layers: {len(quantizers)}")
+    
+    if quantizers:
+        # Analyze quantizer types
+        gptq_count = sum(1 for q in quantizers.values() if hasattr(q, 'scale'))
+        simple_count = sum(1 for q in quantizers.values() if isinstance(q, dict))
+        
+        print(f"GPTQ quantizers: {gptq_count}")
+        print(f"Simple quantizers: {simple_count}")
+        
+        # Print some example quantizer info
+        print("\nExample quantizer information:")
+        for i, (name, quantizer) in enumerate(quantizers.items()):
+            if i < 3:  # Show first 3
+                if hasattr(quantizer, 'scale'):
+                    print(f"  {name}: scale={quantizer.scale:.6f}, zero={quantizer.zero:.6f}, maxq={quantizer.maxq}")
+                elif isinstance(quantizer, dict):
+                    print(f"  {name}: scale={quantizer['scale']:.6f}, zero={quantizer['zero']:.6f}, maxq={quantizer['maxq']}")
+    
+    print("=" * 50)
+
 # Add function to compare original vs quantized performance
 def compare_model_performance(original_model, quantized_model, testloader, args, tokenizer):
     """Compare performance between original and quantized models"""
@@ -451,7 +476,7 @@ if __name__ == "__main__":
     args.hidden_size = model.config.hidden_size
     # Call opt_sequential_keras
     quantizers = opt_sequential_keras(model, dataloader, args, quantization_type='gptq')
-    print("Quantization complete. Quantizers:", quantizers)
+    print_quantization_summary(quantizers, "OPT-125M (TensorFlow)")
 
     # Test quantization effectiveness
     print("\n=== Quantization Verification ===")

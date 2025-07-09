@@ -52,11 +52,21 @@ def opt_sequential(model, dataloader, dev, quantization_type='gptq'):
             cache['attention_mask'] = kwargs['attention_mask']
             raise ValueError
     layers[0] = Catcher(layers[0])
+    
+    print('Calibrating on token IDs...')
+    activation_count = 0
     for batch in dataloader:
         try:
             model(batch[0].to(dev))
+            activation_count += 1
+            if activation_count % 10 == 0:
+                print(f"Collected activations from {activation_count} batches")
         except ValueError:
             pass
+        if activation_count >= 10:  # Limit to first 10 batches for calibration
+            break
+    print(f'Calibration complete. Collected from {activation_count} batches.')
+    
     layers[0] = layers[0].module
 
     layers[0] = layers[0].cpu()
@@ -77,8 +87,12 @@ def opt_sequential(model, dataloader, dev, quantization_type='gptq'):
     for i in range(len(layers)):
         layer = layers[i].to(dev)
         subset = find_layers(layer)
+        print(f"Processing layer {i}: {type(layer)}")
+        print(f"Found {len(subset)} Linear layers in layer {i}")
+        
         gptq = {}
         for name in subset:
+            print(f"Setting up GPTQ for {name}")
             gptq[name] = GPTQ(subset[name])
             gptq[name].quantizer = Quantizer()
             gptq[name].quantizer.configure(
@@ -98,13 +112,23 @@ def opt_sequential(model, dataloader, dev, quantization_type='gptq'):
             h.remove()
 
         for name in subset:
-            print(i, name)
-            print('Quantizing ...')
+            print(f"Quantizing layer {i}, {name}")
+            original_weight = subset[name].weight.data.clone()
+            print(f"Original weight shape: {original_weight.shape}")
+            print(f"Original weight range: [{original_weight.min():.6f}, {original_weight.max():.6f}]")
+            
             if quantization_type == 'gptq':
                 gptq[name].fasterquant(
                     percdamp=args.percdamp, groupsize=args.groupsize, actorder=args.act_order, static_groups=args.static_groups
                 )
                 quantizers['model.decoder.layers.%d.%s' % (i, name)] = gptq[name].quantizer
+                
+                # Verify quantization actually happened
+                quantized_weight = subset[name].weight.data
+                print(f"Quantized weight range: [{quantized_weight.min():.6f}, {quantized_weight.max():.6f}]")
+                weight_change = torch.mean(torch.abs(original_weight - quantized_weight))
+                print(f"Average weight change: {weight_change:.6f}")
+                
             elif quantization_type == 'simple':
                 # Simple quantization: just round weights
                 W = subset[name].weight.data
@@ -123,6 +147,13 @@ def opt_sequential(model, dataloader, dev, quantization_type='gptq'):
                     'zero': zero_point,
                     'maxq': max_val
                 }
+                
+                # Verify quantization actually happened
+                quantized_weight = subset[name].weight.data
+                print(f"Simple quantized weight range: [{quantized_weight.min():.6f}, {quantized_weight.max():.6f}]")
+                weight_change = torch.mean(torch.abs(original_weight - quantized_weight))
+                print(f"Average weight change: {weight_change:.6f}")
+                
             gptq[name].free()
         for j in range(args.nsamples):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
@@ -136,6 +167,8 @@ def opt_sequential(model, dataloader, dev, quantization_type='gptq'):
 
     model.config.use_cache = use_cache
     
+    print('Quantization complete.')
+    print(f'Total quantizers: {len(quantizers)}')
     return quantizers
 
 @torch.no_grad()
@@ -371,6 +404,30 @@ def benchmark(model, input_ids, check=False):
         if check:
             print('PPL:', torch.exp(tot / (input_ids.numel() - 1)).item())
 
+def print_quantization_summary(quantizers, model_name="OPT-125M"):
+    """Print a summary of quantization results"""
+    print(f"\n=== Quantization Summary for {model_name} ===")
+    print(f"Total quantized layers: {len(quantizers)}")
+    
+    if quantizers:
+        # Analyze quantizer types
+        gptq_count = sum(1 for q in quantizers.values() if hasattr(q, 'scale'))
+        simple_count = sum(1 for q in quantizers.values() if isinstance(q, dict))
+        
+        print(f"GPTQ quantizers: {gptq_count}")
+        print(f"Simple quantizers: {simple_count}")
+        
+        # Print some example quantizer info
+        print("\nExample quantizer information:")
+        for i, (name, quantizer) in enumerate(quantizers.items()):
+            if i < 3:  # Show first 3
+                if hasattr(quantizer, 'scale'):
+                    print(f"  {name}: scale={quantizer.scale:.6f}, zero={quantizer.zero:.6f}, maxq={quantizer.maxq}")
+                elif isinstance(quantizer, dict):
+                    print(f"  {name}: scale={quantizer['scale']:.6f}, zero={quantizer['zero']:.6f}, maxq={quantizer['maxq']}")
+    
+    print("=" * 50)
+
 
 if __name__ == '__main__':
     import argparse
@@ -470,7 +527,8 @@ if __name__ == '__main__':
     if args.wbits < 16 and not args.nearest:
         tick = time.time()
         quantizers = opt_sequential(model, dataloader, DEV, quantization_type=args.quantization_type)
-        print(time.time() - tick)
+        print(f"Total quantization time: {time.time() - tick:.2f} seconds")
+        print_quantization_summary(quantizers, "OPT-125M (PyTorch)")
 
     if args.benchmark:
         gpus = [torch.device('cuda:%d' % i) for i in range(torch.cuda.device_count())]
