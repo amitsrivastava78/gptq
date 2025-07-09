@@ -671,7 +671,19 @@ def patch_decoder_layer(layer):
         x = x + hidden_states
 
         y = self.final_layer_norm(x)
-        y = self.fc2(self.fc1(y))
+        # Flatten y if needed
+        y_shape = tf.shape(y)
+        y_static = y.shape
+        if len(y_static) == 3 and None not in y_static:
+            batch, seq, hidden = y_static
+            y_flat = tf.reshape(y, [-1, y_static[-1]])
+            y_flat = self.fc1(y_flat)
+            y_flat = tf.reshape(y_flat, [batch, seq, -1])
+            y_flat = tf.reshape(y_flat, [-1, y_flat.shape[-1]])
+            y_flat = self.fc2(y_flat)
+            y = tf.reshape(y_flat, [batch, seq, -1])
+        else:
+            y = self.fc2(self.fc1(y))
         y = self.dropout(y, training=kwargs.get('training', False))  # <--- correct attribute
         y = y + x
 
