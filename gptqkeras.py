@@ -153,7 +153,10 @@ class GPTQ:
             Q = tf.gather(Q, invperm, axis=1)
 
         # Note: No Conv1D equivalent in Keras, so we skip that transpose
-        self.layer.weights[0].assign(tf.convert_to_tensor(W, dtype=self.layer.weights[0].dtype))
+        # After quantization logic, before assignment
+        print("W before assignment (first 5):", W.flatten()[:5])
+        # Assign to kernel, not weights[0]
+        self.layer.kernel.assign(tf.convert_to_tensor(Q, dtype=self.layer.kernel.dtype))
         if DEBUG:
             print(tf.reduce_sum(tf.square(self.layer(self.inp1) - self.out1)))
 
