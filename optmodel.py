@@ -250,6 +250,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 self.dense_layer = dense_layer
                 self.gptq_obj = gptq_obj
             def call(self, inputs, **kwargs):
+                # inputs should be a tensor, not a dict!
                 outputs = self.dense_layer(inputs, **kwargs)
                 self.gptq_obj.add_batch(inputs, outputs)
                 return outputs
