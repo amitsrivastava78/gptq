@@ -175,12 +175,11 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         try:
             attention_mask = np.ones_like(batch)
             _ = model({'input_ids': batch, 'attention_mask': attention_mask})
-            activation_count += 1
-            if activation_count % 10 == 0:
-                print(f"Collected activations from {activation_count} batches")
         except ValueError:
-            pass
-        if activation_count >= 10:  # Limit to first 10 batches for calibration
+            # ActivationCatcher triggered!
+            activation_count += 1
+            break  # Only need one batch for calibration
+        if activation_count >= 10:
             break
     print(f'Calibration complete. Collected from {activation_count} batches.')
     print("Collected input in cache:", cache['current_input'])
