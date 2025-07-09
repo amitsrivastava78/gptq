@@ -8,7 +8,26 @@ from quantkeras import Quantizer
 import tensorflow as tf
 print(tf.config.list_physical_devices('GPU'))
 
-GLOBAL_ACTIVATION_CACHE = {}  # <--- This must be before ActivationCatcher
+# ActivationCatcher for Keras (equivalent to Catcher in PyTorch)
+class ActivationCatcher(keras.layers.Layer):
+    # Class variable to store cache
+    cache = {}
+    
+    def __init__(self, module):
+        super().__init__()
+        self.module = module
+    def call(self, inputs, **kwargs):
+        print("ActivationCatcher triggered!")
+        ActivationCatcher.cache['current_input'] = inputs
+        print("Cache after assignment:", ActivationCatcher.cache)
+        if 'attention_mask' in kwargs:
+            ActivationCatcher.cache['attention_mask'] = kwargs['attention_mask']
+        else:
+            # Create a default attention mask if not provided
+            batch_size = tf.shape(inputs)[0]
+            seq_len = tf.shape(inputs)[1]
+            ActivationCatcher.cache['attention_mask'] = tf.ones((batch_size, seq_len), dtype=tf.int32)
+        raise ValueError("Catcher activated")
 
 def find_layers(module):
     # Recursively find all Dense layers in the module (equivalent to Linear layers in PyTorch)
@@ -91,24 +110,6 @@ def debug_layer_structure(module, max_depth=3, current_depth=0):
         for i, child in enumerate(module.submodules):
             debug_layer_structure(child, max_depth, current_depth + 1)
 
-# ActivationCatcher for Keras (equivalent to Catcher in PyTorch)
-class ActivationCatcher(keras.layers.Layer):
-    def __init__(self, module):
-        super().__init__()
-        self.module = module
-    def call(self, inputs, **kwargs):
-        print("ActivationCatcher triggered!")
-        GLOBAL_ACTIVATION_CACHE['current_input'] = inputs
-        print("Cache after assignment:", GLOBAL_ACTIVATION_CACHE)
-        if 'attention_mask' in kwargs:
-            GLOBAL_ACTIVATION_CACHE['attention_mask'] = kwargs['attention_mask']
-        else:
-            # Create a default attention mask if not provided
-            batch_size = tf.shape(inputs)[0]
-            seq_len = tf.shape(inputs)[1]
-            GLOBAL_ACTIVATION_CACHE['attention_mask'] = tf.ones((batch_size, seq_len), dtype=tf.int32)
-        raise ValueError("Catcher activated")
-
 def inspect_model_structure(model, max_depth=3):
     """Inspect the model structure to understand layer hierarchy"""
     def _inspect_recursive(module, name='', depth=0):
@@ -160,7 +161,8 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
 
     # Create input cache
     dtype = tf.float32  # Default dtype for TensorFlow
-    cache = {'attention_mask': None, 'current_input': None}
+    # Clear the class cache before starting
+    ActivationCatcher.cache = {'attention_mask': None, 'current_input': None}
 
     # Set up activation catcher for first layer
     original_first_layer = layers[0]
@@ -184,15 +186,15 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         if activation_count >= 10:
             break
     print(f'Calibration complete. Collected from {activation_count} batches.')
-    print("Collected input in cache:", cache['current_input'])
+    print("Collected input in cache:", ActivationCatcher.cache['current_input'])
     
     # Restore first layer
     layers[0] = original_first_layer
     print("First layer after restore:", type(layers[0]))
 
     # Get the collected input
-    inps = cache['current_input']
-    attention_mask = cache['attention_mask']
+    inps = ActivationCatcher.cache['current_input']
+    attention_mask = ActivationCatcher.cache['attention_mask']
     
     if inps is None:
         print("Error: No input collected. Using dummy input.")
