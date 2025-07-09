@@ -45,6 +45,50 @@ def find_layers(module):
     _find_layers_recursive(module)
     return layers
 
+def find_layers_tf_opt(module):
+    """Specialized function for TensorFlow OPT model structure"""
+    layers = {}
+    
+    def _find_layers_recursive(module, name=''):
+        if isinstance(module, keras.layers.Dense):
+            layers[name] = module
+            print(f"Found Dense layer: {name} -> {module.name}")
+        # For TensorFlow OPT, check specific attributes
+        elif hasattr(module, 'layers'):
+            for i, child in enumerate(module.layers):
+                child_name = f"{name}.layers[{i}]" if name else f"layers[{i}]"
+                _find_layers_recursive(child, child_name)
+        # Check for attention components
+        elif hasattr(module, 'self_attn'):
+            attn = module.self_attn
+            if hasattr(attn, 'q_proj') and isinstance(attn.q_proj, keras.layers.Dense):
+                layers[f"{name}.self_attn.q_proj" if name else "self_attn.q_proj"] = attn.q_proj
+                print(f"Found Dense layer: {name}.self_attn.q_proj" if name else "self_attn.q_proj")
+            if hasattr(attn, 'k_proj') and isinstance(attn.k_proj, keras.layers.Dense):
+                layers[f"{name}.self_attn.k_proj" if name else "self_attn.k_proj"] = attn.k_proj
+                print(f"Found Dense layer: {name}.self_attn.k_proj" if name else "self_attn.k_proj")
+            if hasattr(attn, 'v_proj') and isinstance(attn.v_proj, keras.layers.Dense):
+                layers[f"{name}.self_attn.v_proj" if name else "self_attn.v_proj"] = attn.v_proj
+                print(f"Found Dense layer: {name}.self_attn.v_proj" if name else "self_attn.v_proj")
+            if hasattr(attn, 'out_proj') and isinstance(attn.out_proj, keras.layers.Dense):
+                layers[f"{name}.self_attn.out_proj" if name else "self_attn.out_proj"] = attn.out_proj
+                print(f"Found Dense layer: {name}.self_attn.out_proj" if name else "self_attn.out_proj")
+        # Check for feed-forward components
+        elif hasattr(module, 'fc1') and isinstance(module.fc1, keras.layers.Dense):
+            layers[f"{name}.fc1" if name else "fc1"] = module.fc1
+            print(f"Found Dense layer: {name}.fc1" if name else "fc1")
+        elif hasattr(module, 'fc2') and isinstance(module.fc2, keras.layers.Dense):
+            layers[f"{name}.fc2" if name else "fc2"] = module.fc2
+            print(f"Found Dense layer: {name}.fc2" if name else "fc2")
+        # Recursively check submodules
+        elif hasattr(module, 'submodules'):
+            for i, child in enumerate(module.submodules):
+                child_name = f"{name}.submodules[{i}]" if name else f"submodules[{i}]"
+                _find_layers_recursive(child, child_name)
+    
+    _find_layers_recursive(module)
+    return layers
+
 # ActivationCatcher for Keras (equivalent to Catcher in PyTorch)
 class ActivationCatcher(keras.layers.Layer):
     def __init__(self, module, cache):
@@ -123,7 +167,9 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         batch = batch.astype('int32')
         try:
             # For TensorFlow models, we need to pass input_ids as a dictionary
-            _ = model({'input_ids': batch})
+            # Also create proper attention mask
+            attention_mask = np.ones_like(batch)
+            _ = model({'input_ids': batch, 'attention_mask': attention_mask})
             activation_count += 1
             if activation_count % 10 == 0:
                 print(f"Collected activations from {activation_count} batches")
@@ -155,8 +201,8 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         layer = layers[i]
         print(f"Processing layer {i}: {type(layer)}")
         
-        # Find Dense layers in this transformer layer
-        subset = find_layers(layer)
+        # Find Dense layers in this transformer layer - use specialized function for TensorFlow OPT
+        subset = find_layers_tf_opt(layer)
         print(f"Found {len(subset)} Dense layers in layer {i}")
         
         if not subset:
