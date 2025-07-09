@@ -27,9 +27,8 @@ class ActivationCatcher(keras.layers.Layer):
         self.module = module
         self.cache = cache
     def call(self, inputs, **kwargs):
-        self.cache['i'] = self.cache.get('i', 0)
-        self.cache['inps'][self.cache['i']] = inputs
-        self.cache['i'] += 1
+        # Store the input directly in the cache
+        self.cache['current_input'] = inputs
         if 'attention_mask' in kwargs:
             self.cache['attention_mask'] = kwargs['attention_mask']
         raise ValueError("Catcher activated")
@@ -42,19 +41,13 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     model.config.use_cache = False
     
     # For TensorFlow models, we need to find the transformer layers
-    # This is more complex than PyTorch since the structure is different
+    # For OPT models, the layers are in model.model.decoder.layers
     layers = []
     
-    # Try to find transformer layers in the model
-    for layer in model.submodules:
-        if hasattr(layer, 'layers') and len(layer.layers) > 0:
-            # This might be a transformer block
-            layers = layer.layers
-            break
-    
-    if not layers:
+    if hasattr(model, 'model') and hasattr(model.model, 'decoder') and hasattr(model.model.decoder, 'layers'):
+        layers = model.model.decoder.layers
+    else:
         # Fallback: look for layers with attention mechanisms
-        layers = []
         for layer in model.submodules:
             if hasattr(layer, 'attention') or hasattr(layer, 'self_attn') or hasattr(layer, 'multi_head_attention'):
                 layers.append(layer)
@@ -65,8 +58,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
 
     # Create input cache
     dtype = tf.float32  # Default dtype for TensorFlow
-    inps = tf.zeros((args.nsamples, args.seqlen, args.hidden_size), dtype=dtype)
-    cache = {'i': 0, 'attention_mask': None, 'inps': inps}
+    cache = {'attention_mask': None, 'current_input': None}
 
     # Set up activation catcher for first layer
     original_first_layer = layers[0]
@@ -85,8 +77,8 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     # Restore first layer
     layers[0] = original_first_layer
 
-    # Create output tensor
-    outs = tf.zeros_like(inps)
+    # Get the collected input
+    inps = cache['current_input']
     attention_mask = cache['attention_mask']
 
     print('Ready.')
@@ -121,13 +113,12 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         # Apply hooks
         hooked_layer = HookLayer(layer, gptq)
         
-        # Process all samples
-        for j in range(args.nsamples):
-            try:
-                outs = hooked_layer(inps[j:j+1], attention_mask=attention_mask)
-            except Exception as e:
-                print(f"Error processing sample {j}: {e}")
-                continue
+        # Process the input through the hooked layer
+        try:
+            outs = hooked_layer(inps, attention_mask=attention_mask)
+        except Exception as e:
+            print(f"Error processing layer {i}: {e}")
+            continue
 
         # Quantize layers
         for name in subset:
@@ -163,15 +154,14 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             gptq[name].free()
         
         # Process outputs again after quantization
-        for j in range(args.nsamples):
-            try:
-                outs = layer(inps[j:j+1], attention_mask=attention_mask)
-            except Exception as e:
-                print(f"Error processing sample {j} after quantization: {e}")
-                continue
+        try:
+            outs = layer(inps, attention_mask=attention_mask)
+        except Exception as e:
+            print(f"Error processing layer {i} after quantization: {e}")
+            continue
 
         # Swap inputs and outputs for next layer
-        inps, outs = outs, inps
+        inps = outs
 
     # Restore cache setting
     model.config.use_cache = use_cache
