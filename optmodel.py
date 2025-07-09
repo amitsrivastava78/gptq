@@ -246,14 +246,11 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 super().__init__()
                 self.layer = layer
                 self.gptq_dict = gptq_dict
-            def call(self, hidden_states, attention_mask=None, **kwargs):
-                # Always pass a dict to the wrapped layer
-                inputs = {"hidden_states": hidden_states}
-                if attention_mask is not None:
-                    inputs["attention_mask"] = attention_mask
+            def call(self, inputs, **kwargs):
+                # inputs is a dict
                 outputs = self.layer(inputs, **kwargs)
                 for name, gptq_obj in self.gptq_dict.items():
-                    gptq_obj.add_batch(hidden_states, outputs)
+                    gptq_obj.add_batch(inputs["hidden_states"], outputs)
                 return outputs
         
         # Apply hooks
@@ -262,7 +259,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         # Process the input through the hooked layer
         try:
             if attention_mask is not None:
-                outs = hooked_layer(inps, attention_mask=attention_mask)
+                inputs = {"hidden_states": inps}
+                if attention_mask is not None:
+                    inputs["attention_mask"] = attention_mask
+                outs = hooked_layer(inputs)
             else:
                 outs = hooked_layer(inps)
         except Exception as e:
