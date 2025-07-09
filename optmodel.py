@@ -292,9 +292,6 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
 
         # Replace each Dense layer in the transformer block with a hooked version
         for name, dense_layer in subset.items():
-            if name not in ("fc1", "fc2"):
-                print(f"Skipping {name} (only quantizing fc1 and fc2 for now)")
-                continue
             # 1. Find parent and attribute name
             result = find_parent_and_attr(layer, dense_layer)
             if result is None:
@@ -655,6 +652,24 @@ def find_parent_and_attr(root, target_layer):
     return None
 
 def patch_decoder_layer(layer):
+    def flatten_dense_call(dense_layer, x, **kwargs):
+        static_shape = x.shape
+        if len(static_shape) == 3 and None not in static_shape:
+            batch, seq, hidden = static_shape
+            x_flat = tf.reshape(x, [-1, static_shape[-1]])
+            out = dense_layer(x_flat, **kwargs)
+            out = tf.reshape(out, [batch, seq, -1])
+            return out
+        elif tf.rank(x) == 3:
+            shape = tf.shape(x)
+            batch, seq, hidden = shape[0], shape[1], shape[2]
+            x_flat = tf.reshape(x, [-1, shape[2]])
+            out = dense_layer(x_flat, **kwargs)
+            out = tf.reshape(out, [batch, seq, -1])
+            return out
+        else:
+            return dense_layer(x, **kwargs)
+
     def new_call(self, inputs, *args, **kwargs):
         if isinstance(inputs, dict):
             hidden_states = inputs['hidden_states']
@@ -665,26 +680,17 @@ def patch_decoder_layer(layer):
 
         x = hidden_states
         x = self.self_attn_layer_norm(x)
+        # Patch all Dense calls in attention if needed
         attn_outputs = self.self_attn(x, attention_mask=attention_mask, training=kwargs.get('training', False))
         x = attn_outputs[0] if isinstance(attn_outputs, (tuple, list)) else attn_outputs
-        x = self.dropout(x, training=kwargs.get('training', False))  # <--- correct attribute
+        x = self.dropout(x, training=kwargs.get('training', False))
         x = x + hidden_states
 
         y = self.final_layer_norm(x)
-        # Flatten y if needed
-        y_shape = tf.shape(y)
-        y_static = y.shape
-        if len(y_static) == 3 and None not in y_static:
-            batch, seq, hidden = y_static
-            y_flat = tf.reshape(y, [-1, y_static[-1]])
-            y_flat = self.fc1(y_flat)
-            y_flat = tf.reshape(y_flat, [batch, seq, -1])
-            y_flat = tf.reshape(y_flat, [-1, y_flat.shape[-1]])
-            y_flat = self.fc2(y_flat)
-            y = tf.reshape(y_flat, [batch, seq, -1])
-        else:
-            y = self.fc2(self.fc1(y))
-        y = self.dropout(y, training=kwargs.get('training', False))  # <--- correct attribute
+        # Patch fc1/fc2
+        y = flatten_dense_call(self.fc1, y)
+        y = flatten_dense_call(self.fc2, y)
+        y = self.dropout(y, training=kwargs.get('training', False))
         y = y + x
 
         return {'hidden_states': y}
