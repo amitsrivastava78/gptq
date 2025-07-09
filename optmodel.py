@@ -196,6 +196,8 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     else:
         print(f"Collected input shape: {inps.shape}")
         print(f"Collected input range: [{tf.reduce_min(inps):.6f}, {tf.reduce_max(inps):.6f}]")
+        print("Collected input shape:", inps.shape)
+        print("Collected input sample:", inps.numpy().flatten()[:5])
 
     print(f'Input shape: {inps.shape}')
     print('Ready.')
@@ -257,6 +259,9 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 # If inputs is a dict, extract the tensor
                 if isinstance(inputs, dict) and 'hidden_states' in inputs:
                     inputs = inputs['hidden_states']
+                if len(inputs.shape) > 2:
+                    # Flatten all but the last dimension
+                    inputs = tf.reshape(inputs, [-1, inputs.shape[-1]])
                 outputs = self.dense_layer(inputs, **kwargs)
                 self.gptq_obj.add_batch(inputs, outputs)
                 return outputs
