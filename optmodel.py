@@ -216,14 +216,17 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             print(f"No Dense layers found in layer {i}, skipping quantization")
             # Process the layer normally
             try:
-                # For TensorFlow models, we need to pass inputs as a dictionary
+                # Always call with dict and extract hidden states
+                inputs = {'hidden_states': inps}
                 if attention_mask is not None:
-                    inputs = {'hidden_states': inps}
-                    if attention_mask is not None:
-                        inputs['attention_mask'] = attention_mask
-                    inps = layer(inputs)
+                    inputs['attention_mask'] = attention_mask
+                outs = layer(inputs)
+                if isinstance(outs, (tuple, list)):
+                    inps = outs[0]
+                elif isinstance(outs, dict) and 'hidden_states' in outs:
+                    inps = outs['hidden_states']
                 else:
-                    inps = layer({'hidden_states': inps})
+                    inps = outs
             except Exception as e:
                 print(f"Error processing layer {i}: {e}")
             continue
@@ -271,10 +274,16 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
 
             # Always call the block with the same input (inps, attention_mask)
             try:
+                inputs = {'hidden_states': inps}
                 if attention_mask is not None:
-                    outs = layer(inps, attention_mask)
+                    inputs['attention_mask'] = attention_mask
+                outs = layer(inputs)
+                if isinstance(outs, (tuple, list)):
+                    inps = outs[0]
+                elif isinstance(outs, dict) and 'hidden_states' in outs:
+                    inps = outs['hidden_states']
                 else:
-                    outs = layer(inps)
+                    inps = outs
             except Exception as e:
                 print(f"Error processing layer {i}, {name}: {e}")
                 setattr(parent, attr_name, original_layer)
@@ -303,10 +312,16 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         
         # Process the input through the hooked layer
         try:
+            inputs = {'hidden_states': inps}
             if attention_mask is not None:
-                outs = layer(inps, attention_mask)
+                inputs['attention_mask'] = attention_mask
+            outs = layer(inputs)
+            if isinstance(outs, (tuple, list)):
+                inps = outs[0]
+            elif isinstance(outs, dict) and 'hidden_states' in outs:
+                inps = outs['hidden_states']
             else:
-                outs = layer(inps)
+                inps = outs
         except Exception as e:
             print(f"Error processing layer {i}: {e}")
             continue
@@ -363,16 +378,22 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         
         # Process outputs again after quantization
         try:
+            inputs = {'hidden_states': inps}
             if attention_mask is not None:
-                outs = layer(inps, attention_mask)
+                inputs['attention_mask'] = attention_mask
+            outs = layer(inputs)
+            if isinstance(outs, (tuple, list)):
+                inps = outs[0]
+            elif isinstance(outs, dict) and 'hidden_states' in outs:
+                inps = outs['hidden_states']
             else:
-                outs = layer(inps)
+                inps = outs
         except Exception as e:
             print(f"Error processing layer {i} after quantization: {e}")
             continue
 
         # Swap inputs and outputs for next layer
-        inps = outs
+        # inps = outs  # <-- now handled above
 
     # Restore cache setting
     model.config.use_cache = use_cache
