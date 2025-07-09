@@ -377,19 +377,22 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 
                 check_replacement(layer, dense_layer, hook_instance)
                 
-                inputs = {'hidden_states': inps}
-                if attention_mask is not None:
-                    inputs['attention_mask'] = attention_mask
-                print(f"[DEBUG] Layer {i} inputs: {type(inputs)}")
-                outs = layer(inputs)
-                print(f"[DEBUG] Layer {i} returned: {type(outs)}")
-                if isinstance(outs, (tuple, list)):
-                    inps = outs[0]
-                elif isinstance(outs, dict) and 'hidden_states' in outs:
-                    inps = outs['hidden_states']
-                else:
-                    inps = outs
-                print(f"Layer {i} output shape: {inps.shape}")
+                # DO NOT call the layer here!
+                pass  # just replace, do not call
+                
+                # inputs = {'hidden_states': inps}
+                # if attention_mask is not None:
+                #     inputs['attention_mask'] = attention_mask
+                # print(f"[DEBUG] Layer {i} inputs: {type(inputs)}")
+                # outs = layer(inputs)
+                # print(f"[DEBUG] Layer {i} returned: {type(outs)}")
+                # if isinstance(outs, (tuple, list)):
+                #     inps = outs[0]
+                # elif isinstance(outs, dict) and 'hidden_states' in outs:
+                #     inps = outs['hidden_states']
+                # else:
+                #     inps = outs
+                # print(f"Layer {i} output shape: {inps.shape}")
             except Exception as e:
                 print(f"Error processing layer {i}, {name}: {e}")
                 print(f"Error occurred in layer call, not in DenseHook")
@@ -424,6 +427,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
 
         # Process the input through the hooked layer
         try:
+            print(f"Calling layer {i} after all Dense replacements, input shape: {inps.shape}")
             inputs = {'hidden_states': inps}
             if attention_mask is not None:
                 inputs['attention_mask'] = attention_mask
@@ -435,7 +439,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             else:
                 inps = outs
         except Exception as e:
-            print(f"Error processing layer {i}: {e}")
+            print(f"Error processing layer {i} after all Dense replacements: {e}")
             continue
 
         # Quantize layers
