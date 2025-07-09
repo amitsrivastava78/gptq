@@ -264,6 +264,13 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             def call(self, inputs, **kwargs):
                 if isinstance(inputs, dict) and 'hidden_states' in inputs:
                     inputs = inputs['hidden_states']
+                # Debug prints
+                print("DenseHook input shape:", inputs.shape)
+                print("DenseHook dense layer type:", type(self.dense_layer))
+                if hasattr(self.dense_layer, 'kernel'):
+                    print("DenseHook dense kernel shape:", self.dense_layer.kernel.shape)
+                else:
+                    print("DenseHook dense layer has no kernel attribute!")
                 # Prefer static shape, fallback to dynamic if needed
                 input_shape = tf.shape(inputs)
                 static_shape = inputs.shape
