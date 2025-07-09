@@ -14,24 +14,31 @@ def find_layers(module):
     def _find_layers_recursive(module, name=''):
         if isinstance(module, keras.layers.Dense):
             layers[name] = module
-        # Also check for other layer types that might contain Dense layers
-        elif hasattr(module, 'submodules'):
-            for i, child in enumerate(module.submodules):
-                child_name = f"{name}.{i}" if name else str(i)
-                _find_layers_recursive(child, child_name)
-        # Check for layers attribute (common in TensorFlow models)
+            print(f"Found Dense layer: {name} -> {module.name}")
+        # Check for specific OPT model structure
         elif hasattr(module, 'layers'):
             for i, child in enumerate(module.layers):
-                child_name = f"{name}.{i}" if name else str(i)
+                child_name = f"{name}.layers[{i}]" if name else f"layers[{i}]"
+                _find_layers_recursive(child, child_name)
+        # Check for submodules (common in TensorFlow models)
+        elif hasattr(module, 'submodules'):
+            for i, child in enumerate(module.submodules):
+                child_name = f"{name}.submodules[{i}]" if name else f"submodules[{i}]"
                 _find_layers_recursive(child, child_name)
         # Check for specific attributes that might contain Dense layers
-        for attr_name in ['dense', 'linear', 'fc', 'projection']:
+        for attr_name in ['dense', 'linear', 'fc', 'projection', 'q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj']:
             if hasattr(module, attr_name):
                 attr = getattr(module, attr_name)
                 if isinstance(attr, keras.layers.Dense):
                     layers[f"{name}.{attr_name}" if name else attr_name] = attr
+                    print(f"Found Dense layer in {attr_name}: {name}.{attr_name}" if name else attr_name)
                 elif hasattr(attr, 'submodules'):
                     _find_layers_recursive(attr, f"{name}.{attr_name}" if name else attr_name)
+        # Check for TFLayerNorm and other layers that might contain Dense layers
+        if hasattr(module, 'layers'):
+            for i, child in enumerate(module.layers):
+                child_name = f"{name}.layers[{i}]" if name else f"layers[{i}]"
+                _find_layers_recursive(child, child_name)
     
     _find_layers_recursive(module)
     return layers
@@ -104,13 +111,19 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     
     # Collect activations
     print('Calibrating on token IDs...')
+    activation_count = 0
     for batch in dataloader:
         batch = batch.astype('int32')
         try:
             _ = model(batch)
+            activation_count += 1
+            if activation_count % 10 == 0:
+                print(f"Collected activations from {activation_count} batches")
         except ValueError:
             pass
-    print('Calibration complete.')
+        if activation_count >= 10:  # Limit to first 10 batches for calibration
+            break
+    print(f'Calibration complete. Collected from {activation_count} batches.')
     
     # Restore first layer
     layers[0] = original_first_layer
@@ -122,6 +135,9 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     if inps is None:
         print("Error: No input collected. Using dummy input.")
         inps = tf.zeros((1, args.seqlen, args.hidden_size), dtype=dtype)
+    else:
+        print(f"Collected input shape: {inps.shape}")
+        print(f"Collected input range: [{tf.reduce_min(inps):.6f}, {tf.reduce_max(inps):.6f}]")
 
     print(f'Input shape: {inps.shape}')
     print('Ready.')
@@ -181,6 +197,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         # Quantize layers
         for name in subset:
             print(f"Quantizing layer {i}, {name}")
+            original_weight = subset[name].weights[0].numpy().copy()
+            print(f"Original weight shape: {original_weight.shape}")
+            print(f"Original weight range: [{np.min(original_weight):.6f}, {np.max(original_weight):.6f}]")
+            
             if quantization_type == 'gptq':
                 gptq[name].fasterquant(
                     blocksize=getattr(args, 'blocksize', 128),
@@ -190,6 +210,13 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                     static_groups=getattr(args, 'static_groups', False)
                 )
                 quantizers[f'layer_{i}.{name}'] = gptq[name].quantizer
+                
+                # Verify quantization actually happened
+                quantized_weight = subset[name].weights[0].numpy()
+                print(f"Quantized weight range: [{np.min(quantized_weight):.6f}, {np.max(quantized_weight):.6f}]")
+                weight_change = np.mean(np.abs(original_weight - quantized_weight))
+                print(f"Average weight change: {weight_change:.6f}")
+                
             elif quantization_type == 'simple':
                 # Simple quantization: just round weights
                 W = subset[name].weights[0].numpy()
@@ -208,6 +235,13 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                     'zero': zero_point,
                     'maxq': max_val
                 }
+                
+                # Verify quantization actually happened
+                quantized_weight = subset[name].weights[0].numpy()
+                print(f"Simple quantized weight range: [{np.min(quantized_weight):.6f}, {np.max(quantized_weight):.6f}]")
+                weight_change = np.mean(np.abs(original_weight - quantized_weight))
+                print(f"Average weight change: {weight_change:.6f}")
+                
             gptq[name].free()
         
         # Process outputs again after quantization
@@ -238,7 +272,11 @@ def load_wikitext(nsamples=128):
     try:
         wikitext = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
         # Use a safe approach to select samples
-        return wikitext.select(range(nsamples))
+        try:
+            return wikitext.select(range(nsamples))
+        except AttributeError:
+            # Fallback: convert to list and slice
+            return list(wikitext)[:nsamples]
     except Exception as e:
         print(f"Error loading WikiText dataset: {e}")
         print("Using fallback dataset approach...")
@@ -345,7 +383,11 @@ if __name__ == "__main__":
         else:
             raise ValueError(f"Unknown dataset: {args.dataset}")
         # Use a safe approach to select samples
-        dataset = dataset.select(range(args.nsamples))
+        try:
+            dataset = dataset.select(range(args.nsamples))
+        except AttributeError:
+            # Fallback: convert to list and slice
+            dataset = list(dataset)[:args.nsamples]
     except Exception as e:
         print(f"Error loading dataset: {e}")
         print("Using fallback dataset approach...")
@@ -362,6 +404,30 @@ if __name__ == "__main__":
     # Call opt_sequential_keras
     quantizers = opt_sequential_keras(model, dataloader, args, quantization_type='gptq')
     print("Quantization complete. Quantizers:", quantizers)
+
+    # Test quantization effectiveness
+    print("\n=== Quantization Verification ===")
+    total_weight_change = 0
+    total_weights = 0
+    for layer in model.layers:
+        if hasattr(layer, 'weights') and layer.weights:
+            for weight in layer.weights:
+                if 'dense' in weight.name.lower() or 'linear' in weight.name.lower():
+                    weight_np = weight.numpy()
+                    weight_change = np.mean(np.abs(weight_np))
+                    total_weight_change += weight_change
+                    total_weights += 1
+                    print(f"Weight {weight.name}: mean abs value = {weight_change:.6f}")
+    
+    if total_weights > 0:
+        avg_weight_change = total_weight_change / total_weights
+        print(f"Average weight change across {total_weights} layers: {avg_weight_change:.6f}")
+        if avg_weight_change < 0.001:
+            print("WARNING: Very small weight changes detected. Quantization may not be working properly.")
+        else:
+            print("Quantization appears to be working (significant weight changes detected).")
+    else:
+        print("No quantizable weights found. Check layer discovery.")
 
     datasets = ['wikitext2', 'ptb']
     for dataset_name in datasets:
