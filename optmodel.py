@@ -320,26 +320,43 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             print(f"Replacing {name} in {parent.__class__.__name__} (attr: {attr_name}) with DenseHook")
             setattr(parent, attr_name, DenseHook(dense_layer, gptq[name]))
             
-            # 4. Also replace any other references to the same layer
-            # Check if the layer appears in submodules or other attributes
-            for submodule in layer.submodules:
-                for sub_attr_name in dir(submodule):
-                    if not sub_attr_name.startswith('_'):
+            # 4. Create a comprehensive replacement strategy
+            # Store the hook instance for consistent replacement
+            hook_instance = DenseHook(dense_layer, gptq[name])
+            
+            # Replace in the main layer
+            setattr(parent, attr_name, hook_instance)
+            
+            # Replace in all submodules recursively
+            def replace_in_module(module, target_layer, hook):
+                for attr_name in dir(module):
+                    if not attr_name.startswith('_'):
                         try:
-                            sub_attr = getattr(submodule, sub_attr_name)
-                            if sub_attr is dense_layer:
-                                print(f"Also replacing {name} in {submodule.__class__.__name__}.{sub_attr_name}")
-                                setattr(submodule, sub_attr_name, DenseHook(dense_layer, gptq[name]))
+                            attr = getattr(module, attr_name)
+                            if attr is target_layer:
+                                print(f"Replacing {name} in {module.__class__.__name__}.{attr_name}")
+                                setattr(module, attr_name, hook)
                         except Exception:
                             pass
+                
+                # Recursively check submodules
+                if hasattr(module, 'submodules'):
+                    for submodule in module.submodules:
+                        replace_in_module(submodule, target_layer, hook)
+            
+            # Apply comprehensive replacement
+            replace_in_module(layer, dense_layer, hook_instance)
 
             # Always call the block with the same input (inps, attention_mask)
             try:
                 print(f"Calling layer {i} with input shape: {inps.shape}")
+                print(f"[DEBUG] About to call layer {i} with {name} replaced")
                 inputs = {'hidden_states': inps}
                 if attention_mask is not None:
                     inputs['attention_mask'] = attention_mask
+                print(f"[DEBUG] Layer {i} inputs: {type(inputs)}")
                 outs = layer(inputs)
+                print(f"[DEBUG] Layer {i} returned: {type(outs)}")
                 if isinstance(outs, (tuple, list)):
                     inps = outs[0]
                 elif isinstance(outs, dict) and 'hidden_states' in outs:
@@ -350,6 +367,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             except Exception as e:
                 print(f"Error processing layer {i}, {name}: {e}")
                 print(f"Error occurred in layer call, not in DenseHook")
+                print(f"[DEBUG] Error details: {type(e).__name__}: {str(e)}")
                 setattr(parent, attr_name, original_layer)
                 continue
 
