@@ -118,12 +118,12 @@ class GPTQ:
                     tf.expand_dims(w, 1), self.quantizer.scale, self.quantizer.zero, self.quantizer.maxq
                 )
                 q = tf.squeeze(q)
-                Q1 = tf.tensor_scatter_nd_update(Q1, tf.expand_dims(tf.range(Q1.shape[0]), 1), tf.expand_dims(q, 1))
-                Losses1 = tf.tensor_scatter_nd_update(Losses1, tf.expand_dims(tf.range(Losses1.shape[0]), 1), tf.expand_dims(tf.square(w - q) / (d ** 2), 1))
-
+                indices = tf.stack([tf.range(Q1.shape[0]), tf.fill([Q1.shape[0]], i)], axis=1)
+                Q1 = tf.tensor_scatter_nd_update(Q1, indices, q)
+                Losses1 = tf.tensor_scatter_nd_update(Losses1, indices, tf.square(w - q) / (d ** 2))
                 err1 = (w - q) / d
                 W1 = W1 - tf.expand_dims(err1, 1) * tf.expand_dims(Hinv1[i, i:], 0)
-                Err1 = tf.tensor_scatter_nd_update(Err1, tf.expand_dims(tf.range(Err1.shape[0]), 1), tf.expand_dims(err1, 1))
+                Err1 = tf.tensor_scatter_nd_update(Err1, indices, err1)
 
             Q = tf.tensor_scatter_nd_update(Q, tf.expand_dims(tf.range(Q.shape[0]), 1), tf.expand_dims(Q1, 1))
             Losses = tf.tensor_scatter_nd_update(Losses, tf.expand_dims(tf.range(Losses.shape[0]), 1), tf.expand_dims(Losses1 / 2, 1))
