@@ -46,10 +46,10 @@ def find_layers(module):
     return layers
 
 def find_layers_tf_opt(module):
-    # Find all Dense layers in the module using Keras' submodules property
     layers = {}
     for layer in module.submodules:
-        if isinstance(layer, keras.layers.Dense):
+        # Robustly detect Dense layers from any Keras variant
+        if 'dense' in type(layer).__name__.lower() or 'dense' in str(type(layer)).lower():
             layers[layer.name] = layer
     return layers
 
