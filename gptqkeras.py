@@ -153,7 +153,7 @@ class GPTQ:
             Q = tf.gather(Q, invperm, axis=1)
 
         # Note: No Conv1D equivalent in Keras, so we skip that transpose
-        self.layer.weights[0].assign(tf.reshape(Q, self.layer.weights[0].shape))
+        self.layer.weights[0].assign(tf.convert_to_tensor(W, dtype=self.layer.weights[0].dtype))
         if DEBUG:
             print(tf.reduce_sum(tf.square(self.layer(self.inp1) - self.out1)))
 

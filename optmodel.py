@@ -48,9 +48,9 @@ def find_layers(module):
 def find_layers_tf_opt(module):
     layers = {}
     for layer in module.submodules:
-        # Robustly detect Dense layers from any Keras variant
         if 'dense' in type(layer).__name__.lower() or 'dense' in str(type(layer)).lower():
-            layers[layer.name] = layer
+            if layer.name in ('fc1', 'fc2'):
+                layers[layer.name] = layer
     return layers
 
 def debug_layer_structure(module, max_depth=3, current_depth=0):
