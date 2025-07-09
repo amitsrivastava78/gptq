@@ -241,27 +241,27 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
 
         # For Keras, we need to use a different approach since there's no register_forward_hook
         # We'll use a custom layer wrapper
-        class HookLayer(keras.layers.Layer):
-            def __init__(self, layer, gptq_dict):
+        class DenseHook(keras.layers.Layer):
+            def __init__(self, dense_layer, gptq_obj):
                 super().__init__()
-                self.layer = layer
-                self.gptq_dict = gptq_dict
+                self.dense_layer = dense_layer
+                self.gptq_obj = gptq_obj
             def call(self, inputs, **kwargs):
-                # inputs is a dict
-                outputs = self.layer(inputs, **kwargs)
-                for name, gptq_obj in self.gptq_dict.items():
-                    gptq_obj.add_batch(inputs["hidden_states"], outputs)
+                outputs = self.dense_layer(inputs, **kwargs)
+                self.gptq_obj.add_batch(inputs, outputs)
                 return outputs
-        
-        # Apply hooks
-        hooked_layer = HookLayer(layer, gptq)
+
+        # Replace each Dense layer in the transformer block with a hooked version
+        for name in subset:
+            parent = layer # Assuming the layer itself is the parent for Dense layers
+            setattr(parent, name, DenseHook(getattr(parent, name), gptq[name]))
         
         # Process the input through the hooked layer
         try:
             inputs = {"hidden_states": inps}
             if attention_mask is not None:
                 inputs["attention_mask"] = attention_mask
-            outs = hooked_layer(inputs)
+            outs = layer(inputs)
         except Exception as e:
             print(f"Error processing layer {i}: {e}")
             continue
