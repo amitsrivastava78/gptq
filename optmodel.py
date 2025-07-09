@@ -152,6 +152,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         print("Warning: Could not find transformer layers, using all submodules")
         layers = list(model.submodules)
 
+    # Patch each decoder layer to ensure submodules get tensors, not dicts
+    for layer in layers:
+        patch_decoder_layer(layer)
+
     # Create input cache
     dtype = tf.float32  # Default dtype for TensorFlow
     cache = {'attention_mask': None, 'current_input': None}
