@@ -45,25 +45,35 @@ def find_layers(module):
     _find_layers_recursive(module)
     return layers
 
-def find_layers_tf_opt(module):
-    """Find all Dense layers in a TFOPTDecoderLayer by traversing its .layers attribute."""
+def find_layers_tf_opt(module, prefix=''):
     layers = {}
-    # If this is a TFOPTDecoderLayer, look for Dense layers in its .layers
+    # Check if this module is a Dense layer
+    if isinstance(module, keras.layers.Dense):
+        layers[prefix.rstrip('.')] = module
+    # Check all attributes (e.g., fc1, fc2, k_proj, etc.)
+    for attr_name in dir(module):
+        if attr_name.startswith('_'):
+            continue
+        try:
+            attr = getattr(module, attr_name)
+        except Exception:
+            continue
+        if isinstance(attr, keras.layers.Dense):
+            layers[f"{prefix}{attr_name}"] = attr
+        elif isinstance(attr, keras.layers.Layer) and attr is not module:
+            # Avoid infinite recursion
+            sublayers = find_layers_tf_opt(attr, f"{prefix}{attr_name}.")
+            layers.update(sublayers)
+    # Check children in .layers
     if hasattr(module, 'layers'):
         for i, child in enumerate(module.layers):
-            if isinstance(child, keras.layers.Dense):
-                layers[f'layers[{i}]'] = child
-            # Recursively check for Dense layers in submodules (e.g., TFOPTAttention)
-            elif hasattr(child, 'layers') or hasattr(child, 'submodules'):
-                sublayers = find_layers_tf_opt(child)
-                for k, v in sublayers.items():
-                    layers[f'layers[{i}].{k}'] = v
-    # Also check submodules
+            sublayers = find_layers_tf_opt(child, f"{prefix}layers[{i}].")
+            layers.update(sublayers)
+    # Check children in .submodules
     if hasattr(module, 'submodules'):
         for i, child in enumerate(module.submodules):
-            sublayers = find_layers_tf_opt(child)
-            for k, v in sublayers.items():
-                layers[f'submodules[{i}].{k}'] = v
+            sublayers = find_layers_tf_opt(child, f"{prefix}submodules[{i}].")
+            layers.update(sublayers)
     return layers
 
 def debug_layer_structure(module, max_depth=3, current_depth=0):
