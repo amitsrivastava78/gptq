@@ -247,7 +247,11 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 self.layer = layer
                 self.gptq_dict = gptq_dict
             def call(self, hidden_states, attention_mask=None, **kwargs):
-                outputs = self.layer(hidden_states, attention_mask=attention_mask, **kwargs)
+                # Always pass a dict to the wrapped layer
+                inputs = {"hidden_states": hidden_states}
+                if attention_mask is not None:
+                    inputs["attention_mask"] = attention_mask
+                outputs = self.layer(inputs, **kwargs)
                 for name, gptq_obj in self.gptq_dict.items():
                     gptq_obj.add_batch(hidden_states, outputs)
                 return outputs
@@ -317,10 +321,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         
         # Process outputs again after quantization
         try:
+            inputs = {"hidden_states": inps}
             if attention_mask is not None:
-                inps = layer(inps, attention_mask=attention_mask)
-            else:
-                inps = layer(inps)
+                inputs["attention_mask"] = attention_mask
+            inps = layer(inputs)
         except Exception as e:
             print(f"Error processing layer {i} after quantization: {e}")
             continue
