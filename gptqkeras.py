@@ -11,6 +11,12 @@ DEBUG = False
 # Disable TensorFlow optimizations for consistency
 tf.config.optimizer.set_jit(False)
 
+# Helper to robustly cast to int
+def to_python_int(x):
+    if hasattr(x, 'numpy'):
+        return int(x.numpy())
+    return int(x)
+
 class GPTQ:
     def __init__(self, layer):
         self.layer = layer
@@ -127,8 +133,9 @@ class GPTQ:
                 W1 = tf.concat([W1[:, :i], W1_slice], axis=1)
                 Err1 = tf.tensor_scatter_nd_update(Err1, indices, err1)
 
-            Q = tf.tensor_scatter_nd_update(Q, tf.expand_dims(tf.range(Q.shape[0]), 1), tf.expand_dims(Q1, 1))
-            Losses = tf.tensor_scatter_nd_update(Losses, tf.expand_dims(tf.range(Losses.shape[0]), 1), tf.expand_dims(Losses1 / 2, 1))
+            Q = tf.concat([Q[:, :to_python_int(i1)], Q1, Q[:, to_python_int(i2):]], axis=1)
+            Losses = tf.concat([Losses[:, :to_python_int(i1)], Losses1 / 2, Losses[:, to_python_int(i2):]], axis=1)
+            Err = tf.concat([Err[:, :to_python_int(i1)], Err1, Err[:, to_python_int(i2):]], axis=1)
 
             W = W - tf.matmul(Err1, Hinv[i1:i2, i2:])
 
