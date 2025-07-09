@@ -8,6 +8,8 @@ from quantkeras import Quantizer
 import tensorflow as tf
 print(tf.config.list_physical_devices('GPU'))
 
+GLOBAL_ACTIVATION_CACHE = {}  # <--- This must be before ActivationCatcher
+
 def find_layers(module):
     # Recursively find all Dense layers in the module (equivalent to Linear layers in PyTorch)
     layers = {}
