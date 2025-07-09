@@ -46,48 +46,61 @@ def find_layers(module):
     return layers
 
 def find_layers_tf_opt(module):
-    """Specialized function for TensorFlow OPT model structure"""
+    """Find all Dense layers in a TFOPTDecoderLayer by traversing its .layers attribute."""
     layers = {}
-    
-    def _find_layers_recursive(module, name=''):
-        if isinstance(module, keras.layers.Dense):
-            layers[name] = module
-            print(f"Found Dense layer: {name} -> {module.name}")
-        # For TensorFlow OPT, check specific attributes
-        elif hasattr(module, 'layers'):
-            for i, child in enumerate(module.layers):
-                child_name = f"{name}.layers[{i}]" if name else f"layers[{i}]"
-                _find_layers_recursive(child, child_name)
-        # Check for attention components
-        elif hasattr(module, 'self_attn'):
-            attn = module.self_attn
-            if hasattr(attn, 'q_proj') and isinstance(attn.q_proj, keras.layers.Dense):
-                layers[f"{name}.self_attn.q_proj" if name else "self_attn.q_proj"] = attn.q_proj
-                print(f"Found Dense layer: {name}.self_attn.q_proj" if name else "self_attn.q_proj")
-            if hasattr(attn, 'k_proj') and isinstance(attn.k_proj, keras.layers.Dense):
-                layers[f"{name}.self_attn.k_proj" if name else "self_attn.k_proj"] = attn.k_proj
-                print(f"Found Dense layer: {name}.self_attn.k_proj" if name else "self_attn.k_proj")
-            if hasattr(attn, 'v_proj') and isinstance(attn.v_proj, keras.layers.Dense):
-                layers[f"{name}.self_attn.v_proj" if name else "self_attn.v_proj"] = attn.v_proj
-                print(f"Found Dense layer: {name}.self_attn.v_proj" if name else "self_attn.v_proj")
-            if hasattr(attn, 'out_proj') and isinstance(attn.out_proj, keras.layers.Dense):
-                layers[f"{name}.self_attn.out_proj" if name else "self_attn.out_proj"] = attn.out_proj
-                print(f"Found Dense layer: {name}.self_attn.out_proj" if name else "self_attn.out_proj")
-        # Check for feed-forward components
-        elif hasattr(module, 'fc1') and isinstance(module.fc1, keras.layers.Dense):
-            layers[f"{name}.fc1" if name else "fc1"] = module.fc1
-            print(f"Found Dense layer: {name}.fc1" if name else "fc1")
-        elif hasattr(module, 'fc2') and isinstance(module.fc2, keras.layers.Dense):
-            layers[f"{name}.fc2" if name else "fc2"] = module.fc2
-            print(f"Found Dense layer: {name}.fc2" if name else "fc2")
-        # Recursively check submodules
-        elif hasattr(module, 'submodules'):
-            for i, child in enumerate(module.submodules):
-                child_name = f"{name}.submodules[{i}]" if name else f"submodules[{i}]"
-                _find_layers_recursive(child, child_name)
-    
-    _find_layers_recursive(module)
+    # If this is a TFOPTDecoderLayer, look for Dense layers in its .layers
+    if hasattr(module, 'layers'):
+        for i, child in enumerate(module.layers):
+            if isinstance(child, keras.layers.Dense):
+                layers[f'layers[{i}]'] = child
+            # Recursively check for Dense layers in submodules (e.g., TFOPTAttention)
+            elif hasattr(child, 'layers') or hasattr(child, 'submodules'):
+                sublayers = find_layers_tf_opt(child)
+                for k, v in sublayers.items():
+                    layers[f'layers[{i}].{k}'] = v
+    # Also check submodules
+    if hasattr(module, 'submodules'):
+        for i, child in enumerate(module.submodules):
+            sublayers = find_layers_tf_opt(child)
+            for k, v in sublayers.items():
+                layers[f'submodules[{i}].{k}'] = v
     return layers
+
+def debug_layer_structure(module, max_depth=3, current_depth=0):
+    """Debug function to understand the actual layer structure"""
+    indent = "  " * current_depth
+    print(f"{indent}{type(module).__name__}: {getattr(module, 'name', 'unnamed')}")
+    
+    if current_depth >= max_depth:
+        return
+    
+    # Check for Dense layers
+    if isinstance(module, keras.layers.Dense):
+        print(f"{indent}  -> DENSE LAYER: {module.name}")
+    
+    # Check all attributes
+    for attr_name in dir(module):
+        if not attr_name.startswith('_'):
+            try:
+                attr = getattr(module, attr_name)
+                if isinstance(attr, keras.layers.Layer):
+                    print(f"{indent}  {attr_name}: {type(attr).__name__} -> {getattr(attr, 'name', 'unnamed')}")
+                    if isinstance(attr, keras.layers.Dense):
+                        print(f"{indent}    -> DENSE LAYER FOUND: {attr.name}")
+                    elif hasattr(attr, 'layers') or hasattr(attr, 'submodules'):
+                        debug_layer_structure(attr, max_depth, current_depth + 1)
+            except Exception as e:
+                pass
+    
+    # Check layers attribute
+    if hasattr(module, 'layers'):
+        for i, child in enumerate(module.layers):
+            debug_layer_structure(child, max_depth, current_depth + 1)
+    
+    # Check submodules
+    if hasattr(module, 'submodules'):
+        for i, child in enumerate(module.submodules):
+            debug_layer_structure(child, max_depth, current_depth + 1)
 
 # ActivationCatcher for Keras (equivalent to Catcher in PyTorch)
 class ActivationCatcher(keras.layers.Layer):
@@ -200,6 +213,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     for i in range(len(layers)):
         layer = layers[i]
         print(f"Processing layer {i}: {type(layer)}")
+        
+        # Debug the layer structure first to understand what we're working with
+        print(f"\n=== Debugging Layer {i} Structure ===")
+        debug_layer_structure(layer, max_depth=2)
         
         # Find Dense layers in this transformer layer - use specialized function for TensorFlow OPT
         subset = find_layers_tf_opt(layer)
