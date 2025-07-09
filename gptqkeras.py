@@ -84,6 +84,7 @@ class GPTQ:
 
         Losses = tf.zeros_like(W)
         Q = tf.zeros_like(W)
+        Err = tf.zeros_like(W)
 
         damp = percdamp * tf.reduce_mean(tf.linalg.diag_part(H))
         # diag = tf.range(self.columns)
