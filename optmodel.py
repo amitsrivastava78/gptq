@@ -264,19 +264,14 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             def call(self, inputs, **kwargs):
                 if isinstance(inputs, dict) and 'hidden_states' in inputs:
                     inputs = inputs['hidden_states']
-                # Debug prints
-                print("DenseHook input shape:", inputs.shape)
-                print("DenseHook dense layer type:", type(self.dense_layer))
-                if hasattr(self.dense_layer, 'kernel'):
-                    print("DenseHook dense kernel shape:", self.dense_layer.kernel.shape)
-                else:
-                    print("DenseHook dense layer has no kernel attribute!")
                 # Prefer static shape, fallback to dynamic if needed
                 input_shape = tf.shape(inputs)
                 static_shape = inputs.shape
                 if len(static_shape) == 3 and None not in static_shape:
                     batch, seq, hidden = static_shape
                     flat_inputs = tf.reshape(inputs, [-1, static_shape[-1]])
+                    print("DenseHook (static) flat_inputs shape:", flat_inputs.shape)
+                    print("DenseHook dense kernel shape:", self.dense_layer.kernel.shape)
                     outputs = self.dense_layer(flat_inputs, **kwargs)
                     outputs = tf.reshape(outputs, [batch, seq, -1])
                 elif tf.rank(inputs) == 3:
@@ -284,9 +279,13 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                     seq = input_shape[1]
                     hidden = input_shape[2]
                     flat_inputs = tf.reshape(inputs, [-1, input_shape[2]])
+                    print("DenseHook (dynamic) flat_inputs shape:", flat_inputs.shape)
+                    print("DenseHook dense kernel shape:", self.dense_layer.kernel.shape)
                     outputs = self.dense_layer(flat_inputs, **kwargs)
                     outputs = tf.reshape(outputs, [batch, seq, -1])
                 else:
+                    print("DenseHook (else) input shape:", inputs.shape)
+                    print("DenseHook dense kernel shape:", self.dense_layer.kernel.shape)
                     outputs = self.dense_layer(inputs, **kwargs)
                 self.gptq_obj.add_batch(inputs, outputs)
                 return outputs
@@ -307,6 +306,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             original_layer = getattr(parent, attr_name)
 
             # 3. Replace with hook
+            print(f"Replacing {name} in {parent.__class__.__name__} (attr: {attr_name}) with DenseHook")
             setattr(parent, attr_name, DenseHook(dense_layer, gptq[name]))
 
             # Always call the block with the same input (inps, attention_mask)
