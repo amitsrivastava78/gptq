@@ -96,7 +96,7 @@ class ActivationCatcher(keras.layers.Layer):
         self.module = module
         self.cache = cache
     def call(self, inputs, **kwargs):
-        # Store the input directly in the cache
+        print("ActivationCatcher triggered!")
         self.cache['current_input'] = inputs
         if 'attention_mask' in kwargs:
             self.cache['attention_mask'] = kwargs['attention_mask']
@@ -163,6 +163,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     # Set up activation catcher for first layer
     original_first_layer = layers[0]
     layers[0] = ActivationCatcher(original_first_layer, cache)
+    print("First layer after patching:", type(layers[0]))
     
     # Collect activations
     print('Calibrating on token IDs...')
@@ -186,6 +187,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     
     # Restore first layer
     layers[0] = original_first_layer
+    print("First layer after restore:", type(layers[0]))
 
     # Get the collected input
     inps = cache['current_input']
