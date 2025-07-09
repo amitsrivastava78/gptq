@@ -45,45 +45,12 @@ def find_layers(module):
     _find_layers_recursive(module)
     return layers
 
-def find_layers_tf_opt(module, prefix=''):
+def find_layers_tf_opt(module):
+    # Find all Dense layers in the module using Keras' submodules property
     layers = {}
-    # Check if this module is a Dense layer
-    if isinstance(module, keras.layers.Dense):
-        layers[prefix.rstrip('.')] = module
-        return layers  # Don't recurse further if it's a Dense layer
-
-    # Check all attributes (e.g., fc1, fc2, k_proj, etc.)
-    for attr_name in dir(module):
-        if attr_name.startswith('_'):
-            continue
-        try:
-            attr = getattr(module, attr_name)
-        except Exception:
-            continue
-        if isinstance(attr, keras.layers.Dense):
-            layers[f"{prefix}{attr_name}"] = attr
-        elif isinstance(attr, keras.layers.Layer) and attr is not module:
-            sublayers = find_layers_tf_opt(attr, f"{prefix}{attr_name}.")
-            layers.update(sublayers)
-        elif isinstance(attr, (list, tuple)):
-            for idx, item in enumerate(attr):
-                sublayers = find_layers_tf_opt(item, f"{prefix}{attr_name}[{idx}].")
-                layers.update(sublayers)
-        elif isinstance(attr, dict):
-            for k, v in attr.items():
-                sublayers = find_layers_tf_opt(v, f"{prefix}{attr_name}[{k}].")
-                layers.update(sublayers)
-
-    # Check children in .layers
-    if hasattr(module, 'layers'):
-        for i, child in enumerate(module.layers):
-            sublayers = find_layers_tf_opt(child, f"{prefix}layers[{i}].")
-            layers.update(sublayers)
-    # Check children in .submodules
-    if hasattr(module, 'submodules'):
-        for i, child in enumerate(module.submodules):
-            sublayers = find_layers_tf_opt(child, f"{prefix}submodules[{i}].")
-            layers.update(sublayers)
+    for layer in module.submodules:
+        if isinstance(layer, keras.layers.Dense):
+            layers[layer.name] = layer
     return layers
 
 def debug_layer_structure(module, max_depth=3, current_depth=0):
@@ -248,9 +215,9 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             try:
                 # For TensorFlow models, we need to pass inputs as a dictionary
                 if attention_mask is not None:
-                    inps = layer(inps, attention_mask=attention_mask)
+                    inps = layer({'input_ids': inps, 'attention_mask': attention_mask})
                 else:
-                    inps = layer(inps)
+                    inps = layer({'input_ids': inps})
             except Exception as e:
                 print(f"Error processing layer {i}: {e}")
             continue
@@ -284,10 +251,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         
         # Process the input through the hooked layer
         try:
+            inputs = {'hidden_states': inps}
             if attention_mask is not None:
-                outs = hooked_layer(inps, attention_mask=attention_mask)
-            else:
-                outs = hooked_layer(inps)
+                inputs['attention_mask'] = attention_mask
+            outs = hooked_layer(inputs)
         except Exception as e:
             print(f"Error processing layer {i}: {e}")
             continue
@@ -344,10 +311,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         
         # Process outputs again after quantization
         try:
+            inputs = {'hidden_states': inps}
             if attention_mask is not None:
-                outs = layer(inps, attention_mask=attention_mask)
-            else:
-                outs = layer(inps)
+                inputs['attention_mask'] = attention_mask
+            inps = layer(inputs)
         except Exception as e:
             print(f"Error processing layer {i} after quantization: {e}")
             continue
