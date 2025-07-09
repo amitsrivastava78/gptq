@@ -208,6 +208,9 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         # Find Dense layers in this transformer layer - use specialized function for TensorFlow OPT
         subset = find_layers_tf_opt(layer)
         print(f"Found {len(subset)} Dense layers in layer {i}")
+        print(f"All submodules for layer {i}: {[type(l) for l in layer.submodules]}")
+        print(f"All submodule names for layer {i}: {[l.name for l in layer.submodules]}")
+        print(f"Found Dense layers: {list(subset.keys())}")
         
         if not subset:
             print(f"No Dense layers found in layer {i}, skipping quantization")
@@ -215,9 +218,12 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             try:
                 # For TensorFlow models, we need to pass inputs as a dictionary
                 if attention_mask is not None:
-                    inps = layer({'input_ids': inps, 'attention_mask': attention_mask})
+                    inputs = {'hidden_states': inps}
+                    if attention_mask is not None:
+                        inputs['attention_mask'] = attention_mask
+                    inps = layer(inputs)
                 else:
-                    inps = layer({'input_ids': inps})
+                    inps = layer({'hidden_states': inps})
             except Exception as e:
                 print(f"Error processing layer {i}: {e}")
             continue
