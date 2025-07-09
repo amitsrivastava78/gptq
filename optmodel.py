@@ -344,13 +344,34 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                     for submodule in module.submodules:
                         replace_in_module(submodule, target_layer, hook)
             
-            # Apply comprehensive replacement
+                        # Apply comprehensive replacement
             replace_in_module(layer, dense_layer, hook_instance)
-
+            
             # Always call the block with the same input (inps, attention_mask)
             try:
                 print(f"Calling layer {i} with input shape: {inps.shape}")
                 print(f"[DEBUG] About to call layer {i} with {name} replaced")
+                print(f"[DEBUG] Checking if {name} is properly replaced in all submodules...")
+                
+                # Debug: Check if the layer is properly replaced everywhere
+                def check_replacement(module, target_layer, hook):
+                    for attr_name in dir(module):
+                        if not attr_name.startswith('_'):
+                            try:
+                                attr = getattr(module, attr_name)
+                                if attr is target_layer:
+                                    print(f"[DEBUG] WARNING: {name} still found as original in {module.__class__.__name__}.{attr_name}")
+                                elif attr is hook:
+                                    print(f"[DEBUG] OK: {name} properly replaced in {module.__class__.__name__}.{attr_name}")
+                            except Exception:
+                                pass
+                    
+                    if hasattr(module, 'submodules'):
+                        for submodule in module.submodules:
+                            check_replacement(submodule, target_layer, hook)
+                
+                check_replacement(layer, dense_layer, hook_instance)
+                
                 inputs = {'hidden_states': inps}
                 if attention_mask is not None:
                     inputs['attention_mask'] = attention_mask
