@@ -264,31 +264,40 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 # If input is a dict, extract hidden_states
                 if isinstance(inputs, dict) and 'hidden_states' in inputs:
                     inputs = inputs['hidden_states']
-                input_shape = tf.shape(inputs)
-                rank = tf.rank(inputs)
-                print("DenseHook input shape before flatten:", input_shape)
-                def handle_3d():
-                    shape = tf.shape(inputs)
-                    batch = tf.gather(shape, 0)
-                    seq = tf.gather(shape, 1)
-                    hidden = tf.gather(shape, 2)
-                    flat_inputs = tf.reshape(inputs, [-1, hidden])
-                    print("DenseHook flat_inputs shape:", tf.shape(flat_inputs))
-                    outputs = self.dense_layer(flat_inputs, **kwargs)
-                    out_dim = tf.gather(tf.shape(outputs), 1)
-                    outputs = tf.reshape(outputs, [batch, seq, out_dim])
-                    print("DenseHook output shape after reshape:", tf.shape(outputs))
-                    return outputs
-                def handle_2d():
+                
+                # Get actual shape values, not tensors
+                input_shape = inputs.shape
+                rank = len(input_shape)
+                print(f"DenseHook input shape: {input_shape}")
+                
+                # For attention projections (k_proj, q_proj, v_proj, out_proj), keep 3D shape
+                # For MLP layers (fc1, fc2), flatten to 2D
+                layer_name = self.dense_layer.name
+                if layer_name in ['k_proj', 'q_proj', 'v_proj', 'out_proj']:
+                    # Attention projections: keep 3D input/output
                     outputs = self.dense_layer(inputs, **kwargs)
-                    print("DenseHook output shape (no reshape):", tf.shape(outputs))
-                    return outputs
-                def handle_default():
-                    raise ValueError(f"DenseHook: Unexpected input rank {rank}, shape {inputs}")
-                outputs = tf.case([(tf.equal(rank, 3), handle_3d), (tf.equal(rank, 2), handle_2d)],
-                                  default=handle_default,
-                                  exclusive=True)
-                self.gptq_obj.add_batch(inputs, outputs)
+                    print(f"DenseHook attention output shape: {outputs.shape}")
+                    # For quantization, flatten both input and output
+                    flat_inputs = tf.reshape(inputs, [-1, inputs.shape[-1]])
+                    flat_outputs = tf.reshape(outputs, [-1, outputs.shape[-1]])
+                    self.gptq_obj.add_batch(flat_inputs, flat_outputs)
+                else:
+                    # MLP layers: flatten to 2D
+                    if rank == 3:
+                        batch, seq, hidden = input_shape
+                        flat_inputs = tf.reshape(inputs, [-1, hidden])
+                        outputs = self.dense_layer(flat_inputs, **kwargs)
+                        out_shape = outputs.shape
+                        outputs = tf.reshape(outputs, [batch, seq, out_shape[-1]])
+                        print(f"DenseHook MLP output shape: {outputs.shape}")
+                        self.gptq_obj.add_batch(flat_inputs, tf.reshape(outputs, [-1, outputs.shape[-1]]))
+                    elif rank == 2:
+                        outputs = self.dense_layer(inputs, **kwargs)
+                        print(f"DenseHook MLP output shape: {outputs.shape}")
+                        self.gptq_obj.add_batch(inputs, outputs)
+                    else:
+                        raise ValueError(f"DenseHook: Unexpected input rank {rank}, shape {input_shape}")
+                
                 return outputs
 
         # Replace each Dense layer in the transformer block with a hooked version
