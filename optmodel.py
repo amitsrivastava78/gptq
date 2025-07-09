@@ -253,6 +253,9 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
 
         # Replace each Dense layer in the transformer block with a hooked version
         for name, dense_layer in subset.items():
+            if name not in ("fc1", "fc2"):
+                print(f"Skipping {name} (only quantizing fc1 and fc2 for now)")
+                continue
             # 1. Find parent and attribute name
             result = find_parent_and_attr(layer, dense_layer)
             if result is None:
