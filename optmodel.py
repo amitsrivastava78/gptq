@@ -264,10 +264,16 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             def call(self, inputs, **kwargs):
                 if isinstance(inputs, dict) and 'hidden_states' in inputs:
                     inputs = inputs['hidden_states']
-                if hasattr(inputs, 'shape') and len(inputs.shape) > 2:
-                    # Flatten all but the last dimension
-                    inputs = tf.reshape(inputs, [-1, inputs.shape[-1]])
-                outputs = self.dense_layer(inputs, **kwargs)
+                orig_shape = tf.shape(inputs)
+                # Flatten all but the last dimension if input is 3D
+                if len(inputs.shape) == 3:
+                    batch, seq, hidden = tf.unstack(tf.shape(inputs))
+                    flat_inputs = tf.reshape(inputs, [batch * seq, hidden])
+                    outputs = self.dense_layer(flat_inputs, **kwargs)
+                    # Restore output shape
+                    outputs = tf.reshape(outputs, [batch, seq, -1])
+                else:
+                    outputs = self.dense_layer(inputs, **kwargs)
                 self.gptq_obj.add_batch(inputs, outputs)
                 return outputs
 
