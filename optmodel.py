@@ -620,6 +620,22 @@ def find_parent_and_attr(root, target_layer):
                 return result
     return None
 
+def patch_decoder_layer(layer):
+    orig_call = layer.call
+    def new_call(self, inputs, *args, **kwargs):
+        # Unpack dict if needed
+        if isinstance(inputs, dict):
+            hidden_states = inputs['hidden_states']
+            attention_mask = inputs.get('attention_mask', None)
+        else:
+            hidden_states = inputs
+            attention_mask = None
+        # Now call the original, but always pass tensors to submodules
+        # You may need to copy the original call logic here, or
+        # if the original call is robust, just call it with unpacked tensors
+        return orig_call({'hidden_states': hidden_states, 'attention_mask': attention_mask}, *args, **kwargs)
+    layer.call = new_call.__get__(layer, layer.__class__)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('model', type=str, default="facebook/opt-125m", help='OPT model to load')
