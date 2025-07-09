@@ -246,10 +246,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 super().__init__()
                 self.layer = layer
                 self.gptq_dict = gptq_dict
-            def call(self, inputs, **kwargs):
-                outputs = self.layer(inputs, **kwargs)
+            def call(self, hidden_states, attention_mask=None, **kwargs):
+                outputs = self.layer(hidden_states, attention_mask=attention_mask, **kwargs)
                 for name, gptq_obj in self.gptq_dict.items():
-                    gptq_obj.add_batch(inputs, outputs)
+                    gptq_obj.add_batch(hidden_states, outputs)
                 return outputs
         
         # Apply hooks
