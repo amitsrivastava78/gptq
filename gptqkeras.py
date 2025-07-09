@@ -15,6 +15,7 @@ class GPTQ:
         self.columns = W.shape[1]
         self.H = ops.zeros((self.columns, self.columns), dtype='float32')
         self.nsamples = 0
+        self.quantizer = None  # Initialize quantizer attribute
 
     def add_batch(self, inp, out):
         if DEBUG:

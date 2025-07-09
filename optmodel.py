@@ -5,8 +5,8 @@ from transformers import TFAutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 from gptqkeras import GPTQ
 from quantkeras import Quantizer
-from tensorflow import keras as tf_keras  # For compatibility with HuggingFace
-
+import tensorflow as tf
+print(tf.config.list_physical_devices('GPU'))
 
 def find_layers(module):
     # Recursively find all Dense layers in the module
@@ -36,10 +36,12 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     for i, layer in enumerate(model.submodules):
         if isinstance(layer, keras.layers.Dense):
             gptq = GPTQ(layer)
-            gptq.quantizer = Quantizer()
-            gptq.quantizer.configure(
+            # Create quantizer instance and assign it
+            quantizer = Quantizer()
+            quantizer.configure(
                 args.wbits, perchannel=True, sym=args.sym, mse=False, trits=getattr(args, 'trits', False)
             )
+            gptq.quantizer = quantizer
             print(f"Quantizing layer {i} ({layer.name}) ...")
             gptq.fasterquant(
                 blocksize=getattr(args, 'blocksize', 128),
@@ -62,11 +64,19 @@ def load_opt_model(model_name="facebook/opt-125m"):
 # 2. Download WikiText-2 dataset
 def load_wikitext(nsamples=128):
     wikitext = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+    # Use a safe approach to select samples
     return wikitext.select(range(nsamples))
 
 # 3. Prepare calibration data (tokenize and batch)
 def prepare_calib_data(dataset, tokenizer, nsamples=128, seqlen=128):
-    texts = [x['text'] for x in dataset]
+    # Try 'text', then 'sentence', else raise error
+    sample = dataset[0]
+    if 'text' in sample:
+        texts = [x['text'] for x in dataset]
+    elif 'sentence' in sample:
+        texts = [x['sentence'] for x in dataset]
+    else:
+        raise KeyError("Neither 'text' nor 'sentence' found in dataset sample keys.")
     encodings = tokenizer(texts, return_tensors="np", padding="max_length", truncation=True, max_length=seqlen)
     return encodings["input_ids"]
 
@@ -81,7 +91,10 @@ def opt_eval_keras(model, testloader, args, tokenizer=None):
     nsamples = 0
     nlls = []
     seqlen = args.seqlen
-    for batch in testloader:
+    pad_token_id = tokenizer.pad_token_id if tokenizer else 0
+
+    for i, batch in enumerate(testloader):
+        print(f"Processing batch {i}")
         batch = np.array(batch)
         batch_size = batch.shape[0]
         nsamples += batch_size
@@ -96,13 +109,29 @@ def opt_eval_keras(model, testloader, args, tokenizer=None):
 
         shift_logits = logits_tensor[:, :-1, :]
         shift_labels = batch[:, 1:]
+
+        # Mask out padding tokens
+        mask = (shift_labels != pad_token_id)
         loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
-        loss = loss_fn(shift_labels, shift_logits)
+        loss = loss_fn(shift_labels, shift_logits)  # shape: (batch, seqlen-1)
+        loss = loss * mask  # zero out loss for padding tokens
         nll = np.sum(loss)
         nlls.append(nll)
-    total_tokens = nsamples * (seqlen - 1)
+        total_tokens = np.sum(mask)
+        print("First few shift_labels:", shift_labels[:2])
+        print("First few mask values:", mask[:2])
+        if np.isnan(loss).any():
+            print("NaN detected in loss!")
     total_nll = np.sum(nlls)
-    ppl = np.exp(total_nll / total_tokens)
+    print(f"Total NLL: {total_nll}, Total tokens: {total_tokens}")
+    if total_tokens == 0:
+        print("No valid tokens to evaluate! Check your mask and data.")
+        return float('inf')
+    avg_loss = total_nll / total_tokens
+    print(f"Average loss per token: {avg_loss}")
+    if np.isnan(avg_loss):
+        print("NaN detected in average loss!")
+    ppl = np.exp(avg_loss)
     print(f'Perplexity: {ppl:.2f}')
     return ppl
 
@@ -130,6 +159,7 @@ if __name__ == "__main__":
         dataset = load_dataset("ptb_text_only", "penn_treebank", split="train")
     else:
         raise ValueError(f"Unknown dataset: {args.dataset}")
+    # Use a safe approach to select samples
     dataset = dataset.select(range(args.nsamples))
     # Prepare calibration data
     calib_data = prepare_calib_data(dataset, tokenizer, nsamples=args.nsamples, seqlen=args.seqlen)
@@ -149,7 +179,8 @@ if __name__ == "__main__":
             testset = load_dataset("ptb_text_only", "penn_treebank", split="test")
         else:
             continue
+        # testset = testset.select(range(100))  # or testset = testset[:100]
         test_data = prepare_calib_data(testset, tokenizer, nsamples=args.nsamples, seqlen=args.seqlen)
-        testloader = make_dataloader(test_data, batch_size=1)
+        testloader = make_dataloader(test_data, batch_size=8)
         print(dataset_name)
         opt_eval_keras(model, testloader, args, tokenizer) 

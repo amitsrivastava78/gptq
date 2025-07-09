@@ -5,3 +5,4 @@ opt175b
 *.txt
 *.pt
 *egg-info*
+.DS_Store
