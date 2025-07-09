@@ -80,8 +80,9 @@ class GPTQ:
         Q = tf.zeros_like(W)
 
         damp = percdamp * tf.reduce_mean(tf.linalg.diag_part(H))
-        diag = tf.range(self.columns)
-        H = tf.tensor_scatter_nd_add(H, tf.expand_dims(diag, 1), tf.fill([self.columns], damp))
+        # diag = tf.range(self.columns)
+        # H = tf.tensor_scatter_nd_add(H, tf.expand_dims(diag, 1), tf.fill([self.columns], damp))
+        H = tf.linalg.set_diag(H, tf.linalg.diag_part(H) + damp)
         H = tf.linalg.cholesky(H)
         H = tf.linalg.cholesky_solve(H, tf.eye(self.columns, dtype=tf.float32))
         H = tf.linalg.cholesky(H)
