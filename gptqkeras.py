@@ -128,13 +128,13 @@ class GPTQ:
 
                 # Use quantize function from quantkeras
                 from quantkeras import quantize
-                print(f"Quantizing column {i}: w range [{tf.reduce_min(w):.6f}, {tf.reduce_max(w):.6f}]")
-                print(f"Scale: {self.quantizer.scale}, Zero: {self.quantizer.zero}, Maxq: {self.quantizer.maxq}")
+                # print(f"Quantizing column {i}: w range [{tf.reduce_min(w):.6f}, {tf.reduce_max(w):.6f}]")
+                # print(f"Scale: {self.quantizer.scale}, Zero: {self.quantizer.zero}, Maxq: {self.quantizer.maxq}")
                 q = quantize(
                     tf.expand_dims(w, 1), self.quantizer.scale, self.quantizer.zero, self.quantizer.maxq
                 )
                 q = tf.squeeze(q)
-                print(f"Quantized q range [{tf.reduce_min(q):.6f}, {tf.reduce_max(q):.6f}]")
+                # print(f"Quantized q range [{tf.reduce_min(q):.6f}, {tf.reduce_max(q):.6f}]")
                 indices = tf.stack([tf.range(Q1.shape[0]), tf.fill([Q1.shape[0]], i)], axis=1)
                 Q1 = tf.tensor_scatter_nd_update(Q1, indices, q)
                 Losses1 = tf.tensor_scatter_nd_update(Losses1, indices, tf.square(w - q) / (d ** 2))

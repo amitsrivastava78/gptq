@@ -319,9 +319,23 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             # 3. Replace with hook
             print(f"Replacing {name} in {parent.__class__.__name__} (attr: {attr_name}) with DenseHook")
             setattr(parent, attr_name, DenseHook(dense_layer, gptq[name]))
+            
+            # 4. Also replace any other references to the same layer
+            # Check if the layer appears in submodules or other attributes
+            for submodule in layer.submodules:
+                for sub_attr_name in dir(submodule):
+                    if not sub_attr_name.startswith('_'):
+                        try:
+                            sub_attr = getattr(submodule, sub_attr_name)
+                            if sub_attr is dense_layer:
+                                print(f"Also replacing {name} in {submodule.__class__.__name__}.{sub_attr_name}")
+                                setattr(submodule, sub_attr_name, DenseHook(dense_layer, gptq[name]))
+                        except Exception:
+                            pass
 
             # Always call the block with the same input (inps, attention_mask)
             try:
+                print(f"Calling layer {i} with input shape: {inps.shape}")
                 inputs = {'hidden_states': inps}
                 if attention_mask is not None:
                     inputs['attention_mask'] = attention_mask
@@ -332,8 +346,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                     inps = outs['hidden_states']
                 else:
                     inps = outs
+                print(f"Layer {i} output shape: {inps.shape}")
             except Exception as e:
                 print(f"Error processing layer {i}, {name}: {e}")
+                print(f"Error occurred in layer call, not in DenseHook")
                 setattr(parent, attr_name, original_layer)
                 continue
 
