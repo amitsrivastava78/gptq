@@ -122,7 +122,9 @@ class GPTQ:
                 Q1 = tf.tensor_scatter_nd_update(Q1, indices, q)
                 Losses1 = tf.tensor_scatter_nd_update(Losses1, indices, tf.square(w - q) / (d ** 2))
                 err1 = (w - q) / d
-                W1 = W1 - tf.expand_dims(err1, 1) * tf.expand_dims(Hinv1[i, i:], 0)
+                # Only update the slice W1[:, i:]
+                W1_slice = W1[:, i:] - tf.expand_dims(err1, 1) * Hinv1[i, i:]
+                W1 = tf.concat([W1[:, :i], W1_slice], axis=1)
                 Err1 = tf.tensor_scatter_nd_update(Err1, indices, err1)
 
             Q = tf.tensor_scatter_nd_update(Q, tf.expand_dims(tf.range(Q.shape[0]), 1), tf.expand_dims(Q1, 1))
