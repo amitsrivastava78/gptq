@@ -685,6 +685,7 @@ def patch_decoder_layer(layer):
             return dense_layer(x, **kwargs)
 
     def new_call(self, inputs, *args, **kwargs):
+        print("[DEBUG] Patched call for TFOPTDecoderLayer")
         if isinstance(inputs, dict):
             hidden_states = inputs['hidden_states']
             attention_mask = inputs.get('attention_mask', None)
