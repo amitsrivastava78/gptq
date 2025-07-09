@@ -64,9 +64,16 @@ class GPTQ:
 
         H = self.H
         del self.H
-        dead = tf.equal(tf.linalg.diag_part(H), 0)
-        H = tf.where(tf.expand_dims(dead, 0), tf.ones_like(H), H)
-        W = tf.where(tf.expand_dims(dead, 0), tf.zeros_like(W), W)
+        
+        # Check if we have any calibration data
+        if self.nsamples == 0:
+            print("WARNING: No calibration data collected. Using identity Hessian.")
+            H = tf.eye(self.columns, dtype=tf.float32)
+        else:
+            dead = tf.equal(tf.linalg.diag_part(H), 0)
+            H = tf.where(tf.expand_dims(dead, 0), tf.ones_like(H), H)
+            # Don't zero out the weights - this breaks quantization
+            # W = tf.where(tf.expand_dims(dead, 0), tf.zeros_like(W), W)
 
         if static_groups:
             import copy
