@@ -168,10 +168,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     print('Calibrating on token IDs...')
     activation_count = 0
     for batch in dataloader:
+        print("Calibration batch shape:", batch.shape)
+        print("Calibration batch sample:", batch[0][:5])
         batch = batch.astype('int32')
         try:
-            # For TensorFlow models, we need to pass input_ids as a dictionary
-            # Also create proper attention mask
             attention_mask = np.ones_like(batch)
             _ = model({'input_ids': batch, 'attention_mask': attention_mask})
             activation_count += 1
@@ -182,6 +182,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         if activation_count >= 10:  # Limit to first 10 batches for calibration
             break
     print(f'Calibration complete. Collected from {activation_count} batches.')
+    print("Collected input in cache:", cache['current_input'])
     
     # Restore first layer
     layers[0] = original_first_layer
@@ -256,10 +257,9 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 self.dense_layer = dense_layer
                 self.gptq_obj = gptq_obj
             def call(self, inputs, **kwargs):
-                # If inputs is a dict, extract the tensor
                 if isinstance(inputs, dict) and 'hidden_states' in inputs:
                     inputs = inputs['hidden_states']
-                if len(inputs.shape) > 2:
+                if hasattr(inputs, 'shape') and len(inputs.shape) > 2:
                     # Flatten all but the last dimension
                     inputs = tf.reshape(inputs, [-1, inputs.shape[-1]])
                 outputs = self.dense_layer(inputs, **kwargs)
