@@ -317,10 +317,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         
         # Process outputs again after quantization
         try:
-            inputs = {'hidden_states': inps}
             if attention_mask is not None:
-                inputs['attention_mask'] = attention_mask
-            inps = layer(inputs)
+                inps = layer(inps, attention_mask=attention_mask)
+            else:
+                inps = layer(inps)
         except Exception as e:
             print(f"Error processing layer {i} after quantization: {e}")
             continue
