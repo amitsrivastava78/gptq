@@ -81,6 +81,7 @@ class GPTQ:
         # 3. Update Hessian with running average
         self.H = self.H * (self.nsamples / (self.nsamples + num_new_samples))
         self.nsamples += num_new_samples
+        print(f"SAMLPLE value is {self.nsamples}")
         
         # 4. Scale and accumulate
         out = tf.sqrt(2.0 / tf.cast(self.nsamples, tf.float32)) * out
@@ -208,6 +209,11 @@ class GPTQ:
         elif Q.shape != self.layer.kernel.shape:
             Q = tf.reshape(Q, self.layer.kernel.shape)
         self.layer.kernel.assign(tf.convert_to_tensor(Q, dtype=self.layer.kernel.dtype))
+        
+        # Also update the weights list to ensure consistency
+        if hasattr(self.layer, 'weights') and len(self.layer.weights) > 0:
+            self.layer.weights[0].assign(tf.convert_to_tensor(Q, dtype=self.layer.weights[0].dtype))
+        
         if DEBUG:
             print(tf.reduce_sum(tf.square(self.layer(self.inp1) - self.out1)))
 

@@ -8,6 +8,23 @@ from quantkeras import Quantizer
 import tensorflow as tf
 print(tf.config.list_physical_devices('GPU'))
 
+# Helper to robustly extract tensor from dicts
+
+def get_tensor(x):
+    # Helper to extract tensor from dicts
+    if isinstance(x, dict):
+        if 'hidden_states' in x:
+            return get_tensor(x['hidden_states'])
+        # Try common keys
+        for k in ['output', 'outputs', 'last_hidden_state', 'logits']:
+            if k in x:
+                return get_tensor(x[k])
+        # If dict has only one value, return it
+        if len(x) == 1:
+            return get_tensor(list(x.values())[0])
+        return None
+    return x
+
 # ActivationCatcher for Keras (equivalent to Catcher in PyTorch)
 class ActivationCatcher(keras.layers.Layer):
     # Class variable to store cache
@@ -24,8 +41,21 @@ class ActivationCatcher(keras.layers.Layer):
             ActivationCatcher.cache['attention_mask'] = kwargs['attention_mask']
         else:
             # Create a default attention mask if not provided
-            batch_size = tf.shape(inputs)[0]
-            seq_len = tf.shape(inputs)[1]
+            # Use tf.shape(inputs) safely
+            tensor_inp = get_tensor(inputs)
+            if tensor_inp is not None:
+                shape = tf.shape(tensor_inp)
+                # Try to get static shape as tuple
+                static_shape = tf.get_static_value(shape)
+                if static_shape is not None and len(static_shape) >= 2:
+                    batch_size = int(static_shape[0])
+                    seq_len = int(static_shape[1])
+                else:
+                    batch_size = 1
+                    seq_len = 1
+            else:
+                batch_size = 1
+                seq_len = 1
             ActivationCatcher.cache['attention_mask'] = tf.ones((batch_size, seq_len), dtype=tf.int32)
         raise ValueError("Catcher activated")
 
@@ -136,6 +166,7 @@ def inspect_model_structure(model, max_depth=3):
 
 def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     print('Starting ...')
+    print(f'[DEBUG] nsamples: {getattr(args, "nsamples", "unknown")}')
 
     # Disable cache for quantization
     use_cache = getattr(model.config, 'use_cache', False)
@@ -154,9 +185,11 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         print("Warning: Could not find transformer layers, using all submodules")
         layers = list(model.submodules)
 
+    print('[DEBUG] Before patching decoder layers')
     # Patch each decoder layer to ensure submodules get tensors, not dicts
     for layer in layers:
         patch_decoder_layer(layer)
+    print('[DEBUG] After patching decoder layers')
 
     # Create input cache
     dtype = tf.float32  # Default dtype for TensorFlow
@@ -170,6 +203,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     
     # Collect activations
     print('Calibrating on token IDs...')
+    print(f'[DEBUG] nsamples before calibration: {getattr(args, "nsamples", "unknown")}, seqlen: {getattr(args, "seqlen", "unknown")}')
     activation_count = 0
     for batch in dataloader:
         print("Calibration batch shape:", batch.shape)
@@ -199,14 +233,21 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         print("Error: No input collected. Using dummy input.")
         inps = tf.zeros((1, args.seqlen, args.hidden_size), dtype=dtype)
     else:
-        print(f"Collected input shape: {inps.shape}")
-        print(f"Collected input range: [{tf.reduce_min(inps):.6f}, {tf.reduce_max(inps):.6f}]")
-        print("Collected input shape:", inps.shape)
-        print("Collected input sample:", inps.numpy().flatten()[:5])
+        # Use get_tensor before accessing .shape
+        _inps_tensor = get_tensor(inps)
+        if _inps_tensor is not None:
+            print(f"Collected input shape: {_inps_tensor.shape}")
+            print(f"Collected input range: [{tf.reduce_min(_inps_tensor):.6f}, {tf.reduce_max(_inps_tensor):.6f}]")
+            print("Collected input shape:", _inps_tensor.shape)
+            print("Collected input sample:", _inps_tensor.numpy().flatten()[:5])
+        else:
+            print("Collected input is not a tensor.")
 
-    print(f'Input shape: {inps.shape}')
+    _inps_tensor = get_tensor(inps)
+    print(f'Input shape: {_inps_tensor.shape if _inps_tensor is not None else "unknown"}')
     print('Ready.')
 
+    print('[DEBUG] Starting quantization loop')
     quantizers = {}
     for i in range(len(layers)):
         layer = layers[i]
@@ -253,27 +294,31 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             )
             gptq[name].quantizer = quantizer
 
-        # For Keras, we need to use a different approach since there's no register_forward_hook
-        # We'll use a custom layer wrapper
         class DenseHook(keras.layers.Layer):
             def __init__(self, dense_layer, gptq_obj):
                 super().__init__()
                 self.dense_layer = dense_layer
                 self.gptq_obj = gptq_obj
             def call(self, inputs, **kwargs):
+                print(f"[DenseHook] CALL: id={id(self)}, layer={self.dense_layer.name}")
                 layer_name = self.dense_layer.name
                 if inputs is None:
                     print(f"[DenseHook] {self.dense_layer.name} received None as input, skipping.")
                     return None
 
-                # If input is a dict, extract hidden_states
-                if isinstance(inputs, dict) and 'hidden_states' in inputs:
-                    inputs = inputs['hidden_states']
+                # Always extract tensor from dicts
+                inputs = get_tensor(inputs)
+                if inputs is None:
+                    print(f"[DenseHook] {layer_name} inputs could not be extracted as tensor, skipping.")
+                    return None
                 print(f"[DenseHook] {layer_name} input shape: {inputs.shape}")
+
                 if layer_name in ['k_proj', 'q_proj', 'v_proj', 'out_proj']:
                     outputs = self.dense_layer(inputs, **kwargs)
-                    if isinstance(outputs, dict) and 'hidden_states' in outputs:
-                        outputs = outputs['hidden_states']
+                    outputs = get_tensor(outputs)
+                    if outputs is None:
+                        print(f"[DenseHook] {layer_name} outputs could not be extracted as tensor, skipping.")
+                        return None
                     print(f"[DenseHook] {layer_name} output shape: {outputs.shape}")
                     in_shape = inputs.shape
                     flat_inputs = tf.reshape(inputs, [-1, in_shape[-1]])
@@ -281,8 +326,6 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                     flat_outputs = tf.reshape(outputs, [-1, out_shape[-1]])
                     self.gptq_obj.add_batch(flat_inputs, flat_outputs)
                 else:
-                    if isinstance(inputs, dict) and 'hidden_states' in inputs:
-                        inputs = inputs['hidden_states']
                     input_shape = inputs.shape
                     rank = len(input_shape)
                     if rank == 3:
@@ -290,8 +333,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                         flat_inputs = tf.reshape(inputs, [-1, hidden])
                         print(f"[DenseHook] {layer_name} flat_inputs shape: {flat_inputs.shape}")
                         outputs = self.dense_layer(flat_inputs, **kwargs)
-                        if isinstance(outputs, dict) and 'hidden_states' in outputs:
-                            outputs = outputs['hidden_states']
+                        outputs = get_tensor(outputs)
+                        if outputs is None:
+                            print(f"[DenseHook] {layer_name} outputs could not be extracted as tensor, skipping.")
+                            return None
                         print(f"[DenseHook] Rank3 {layer_name} dense output shape: {outputs.shape}")
                         out_shape = outputs.shape
                         outputs = tf.reshape(outputs, [batch, seq, out_shape[-1]])
@@ -299,14 +344,27 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                         self.gptq_obj.add_batch(flat_inputs, tf.reshape(outputs, [-1, out_shape[-1]]))
                     elif rank == 2:
                         outputs = self.dense_layer(inputs, **kwargs)
-                        if isinstance(outputs, dict) and 'hidden_states' in outputs:
-                            outputs = outputs['hidden_states']
+                        outputs = get_tensor(outputs)
+                        if outputs is None:
+                            print(f"[DenseHook] {layer_name} outputs could not be extracted as tensor, skipping.")
+                            return None
                         print(f"[DenseHook] Rank2 {layer_name} output shape: {outputs.shape}")
                         out_shape = outputs.shape
                         print("before call to add_batch")
                         self.gptq_obj.add_batch(inputs, outputs)
                     else:
                         raise ValueError(f"DenseHook: Unexpected input rank {rank}, shape {input_shape}")
+
+                # Final defensive check before returning
+                if outputs is None:
+                    print(f"[DenseHook] {layer_name} final outputs is None, returning zeros tensor.")
+                    # Return a zero tensor with appropriate shape as fallback
+                    if hasattr(inputs, 'shape') and len(inputs.shape) == 2:
+                        return tf.zeros((inputs.shape[0], self.dense_layer.units), dtype=inputs.dtype)
+                    elif hasattr(inputs, 'shape') and len(inputs.shape) == 3:
+                        return tf.zeros((inputs.shape[0], inputs.shape[1], self.dense_layer.units), dtype=inputs.dtype)
+                    else:
+                        return None
                 return outputs
 
         # Replace each Dense layer in the transformer block with a hooked version
@@ -325,7 +383,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             hook_instance = DenseHook(dense_layer, gptq[name])
             
             # 4. Replace with hook
-            print(f"Replacing {name} in {parent.__class__.__name__} (attr: {attr_name}) with DenseHook")
+            print(f"Replacing {name} in {parent.__class__.__name__} (attr: {attr_name}) with DenseHook (id={id(hook_instance)})")
             setattr(parent, attr_name, hook_instance)
             
             # 5. Apply comprehensive replacement
@@ -335,22 +393,19 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                         try:
                             attr = getattr(module, attr_name)
                             if attr is target_layer:
-                                print(f"Replacing {name} in {module.__class__.__name__}.{attr_name}")
+                                print(f"Replacing {name} in {module.__class__.__name__}.{attr_name} with DenseHook (id={id(hook)})")
                                 setattr(module, attr_name, hook)
                         except Exception:
                             pass
-                
                 # Recursively check submodules
                 if hasattr(module, 'submodules'):
                     for submodule in module.submodules:
                         replace_in_module(submodule, target_layer, hook)
-            
             replace_in_module(layer, dense_layer, hook_instance)
-            
             # 6. If the Dense layer is in the attention submodule, replace it there
             if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, name):
                 setattr(layer.self_attn, name, hook_instance)
-                print(f"[DEBUG] Replaced {name} in self_attn with DenseHook")
+                print(f"[DEBUG] Replaced {name} in self_attn with DenseHook (id={id(hook_instance)})")
         
         # After all Dense replacements in the layer:
         if hasattr(layer, 'self_attn'):
@@ -358,9 +413,8 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
 
         # 7. Call the layer ONCE to collect calibration data
         try:
-            # Ensure inps is a tensor for shape access
-            _inps = inps['hidden_states'] if isinstance(inps, dict) and 'hidden_states' in inps else inps
-            print(f"Calling layer {i} after all Dense replacements, input shape: {_inps.shape}")
+            _inps = get_tensor(inps)
+            print(f"Calling layer {i} for calibration, input shape: {_inps.shape if _inps is not None else 'unknown'}")
             inputs = {'hidden_states': inps}
             if attention_mask is not None:
                 inputs['attention_mask'] = attention_mask
@@ -371,48 +425,44 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 inps = outs['hidden_states']
             else:
                 inps = outs
-            _inps = inps['hidden_states'] if isinstance(inps, dict) and 'hidden_states' in inps else inps
-            print(f"Layer {i} output shape: {_inps.shape}")
+            _inps = get_tensor(inps)
+            print(f"Layer {i} output shape: {_inps.shape if _inps is not None else 'unknown'}")
         except Exception as e:
-            print(f"Error processing layer {i} after all Dense replacements: {e}")
+            print(f"Error processing layer {i} during calibration: {e}")
             continue
 
+        print(f'[DEBUG] Restoring original Dense layers after quantization for layer {i}')
         # 9. Restore original layers after quantization
         for name, dense_layer in subset.items():
             result = find_parent_and_attr(layer, dense_layer)
             if result is not None:
                 parent, attr_name = result
-                original_layer = getattr(parent, attr_name)
+                # Get the original Dense layer (not the hook)
+                original_layer = subset[name]  # This is the original Dense layer
                 setattr(parent, attr_name, original_layer)
-        
+                print(f"Restored {name} to original Dense layer (id={id(original_layer)})")
+            # Also restore in self_attn if it exists
+            if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, name):
+                setattr(layer.self_attn, name, original_layer)
+                print(f"Restored {name} in self_attn to original Dense layer (id={id(original_layer)})")
+        # Also restore the attention module to its original state
+        if hasattr(layer, 'self_attn'):
+            # Restore the original attention call method
+            if hasattr(layer.self_attn, '_original_call'):
+                layer.self_attn.call = layer.self_attn._original_call
+                print("Restored original attention call method")
         # After all Dense replacements in the layer:
         if hasattr(layer, 'self_attn'):
             patch_attention_module(layer.self_attn)
-
-        # Process the input through the hooked layer
-        try:
-            _inps = inps['hidden_states'] if isinstance(inps, dict) and 'hidden_states' in inps else inps
-            print(f"Calling layer {i} after all Dense replacements, input shape: {_inps.shape}")
-            inputs = {'hidden_states': inps}
-            if attention_mask is not None:
-                inputs['attention_mask'] = attention_mask
-            outs = layer(inputs)
-            if isinstance(outs, (tuple, list)):
-                inps = outs[0]
-            elif isinstance(outs, dict) and 'hidden_states' in outs:
-                inps = outs['hidden_states']
-            else:
-                inps = outs
-        except Exception as e:
-            print(f"Error processing layer {i} after all Dense replacements: {e}")
-            continue
-
+        print(f'[DEBUG] Finished restoring Dense layers for layer {i}')
+        # Note: We don't call the layer after quantization because the hooks are still in place
+        # The quantization process modifies the weights directly, so we don't need to call the layer again
         # 8. Quantize all layers after calibration data is collected
+        print(f'[DEBUG] Quantizing all Dense layers in layer {i}')
         for name, dense_layer in subset.items():
             try:
                 print(f"Quantizing layer {i}, {name}")
                 original_weight = dense_layer.weights[0].numpy().copy()
-                
                 if quantization_type == 'gptq':
                     gptq[name].fasterquant(
                         blocksize=getattr(args, 'blocksize', 128),
@@ -422,13 +472,11 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                         static_groups=getattr(args, 'static_groups', False)
                     )
                     quantizers[f'layer_{i}.{name}'] = gptq[name].quantizer
-                    
                     # Verify quantization actually happened
                     quantized_weight = dense_layer.weights[0].numpy()
                     print(f"Quantized weight range: [{np.min(quantized_weight):.6f}, {np.max(quantized_weight):.6f}]")
                     weight_change = np.mean(np.abs(original_weight - quantized_weight))
                     print(f"Average weight change: {weight_change:.6f}")
-                    
                 elif quantization_type == 'simple':
                     # Simple quantization: just round weights
                     W = dense_layer.weights[0].numpy()
@@ -447,20 +495,18 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                         'zero': zero_point,
                         'maxq': max_val
                     }
-                    
                     # Verify quantization actually happened
                     quantized_weight = dense_layer.weights[0].numpy()
-                    print(f"Simple quantized weight range: [{np.min(quantized_weight):.6f}, {np.max(quantized_weight):.6f}]")
+                    print(f"Simple quantized weight range: [{np.min(quantized_weight):.6f}, {np.max(quantized_weight):.6f}")
                     weight_change = np.mean(np.abs(original_weight - quantized_weight))
                     print(f"Average weight change: {weight_change:.6f}")
-                    
                 gptq[name].free()
             except Exception as e:
                 print(f"Error quantizing layer {i}, {name}: {e}")
-        
+        print(f'[DEBUG] Finished quantizing Dense layers in layer {i}')
         # Process outputs again after quantization
         try:
-            _inps = inps['hidden_states'] if isinstance(inps, dict) and 'hidden_states' in inps else inps
+            _inps = get_tensor(inps)
             inputs = {'hidden_states': inps}
             if attention_mask is not None:
                 inputs['attention_mask'] = attention_mask
@@ -474,14 +520,9 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         except Exception as e:
             print(f"Error processing layer {i} after quantization: {e}")
             continue
-
         # Swap inputs and outputs for next layer
         # inps = outs  # <-- now handled above
-
-    # Restore cache setting
-    model.config.use_cache = use_cache
-    
-    print('Quantization complete.')
+    print('[DEBUG] Quantization complete.')
     print(f'Total quantizers: {len(quantizers)}')
     return quantizers
 
@@ -573,13 +614,10 @@ def load_wikitext(nsamples=128):
     try:
         wikitext = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
         # Use a safe approach to select samples
-        try:
-            if hasattr(wikitext, 'select'):
-                return wikitext.select(range(nsamples))
-            else:
-                # Fallback: convert to list and slice
-                return list(wikitext)[:nsamples]
-        except Exception:
+        from datasets import Dataset
+        if isinstance(wikitext, Dataset):
+            return wikitext.select(range(nsamples))
+        else:
             # Fallback: convert to list and slice
             return list(wikitext)[:nsamples]
     except Exception as e:
@@ -702,22 +740,26 @@ def find_parent_and_attr(root, target_layer):
 
 def patch_decoder_layer(layer):
     def flatten_dense_call(dense_layer, x, **kwargs):
-        static_shape = x.shape
-        if len(static_shape) == 3 and None not in static_shape:
+        tensor_x = get_tensor(x)
+        static_shape = getattr(tensor_x, 'shape', None)
+        if static_shape is not None and len(static_shape) == 3 and None not in static_shape:
             batch, seq, hidden = static_shape
-            x_flat = tf.reshape(x, [-1, static_shape[-1]])
-            out = dense_layer(x_flat, **kwargs)
-            out = tf.reshape(out, [batch, seq, -1])
-            return out
-        elif tf.rank(x) == 3:
-            shape = tf.shape(x)
-            batch, seq, hidden = shape[0], shape[1], shape[2]
-            x_flat = tf.reshape(x, [-1, shape[2]])
+            x_flat = tf.reshape(tensor_x, [-1, static_shape[-1]])
             out = dense_layer(x_flat, **kwargs)
             out = tf.reshape(out, [batch, seq, -1])
             return out
         else:
-            return dense_layer(x, **kwargs)
+            # Try dynamic shape
+            shape = tf.shape(tensor_x)
+            static_shape = tf.get_static_value(shape)
+            if static_shape is not None and len(static_shape) == 3:
+                batch, seq, hidden = static_shape
+                x_flat = tf.reshape(tensor_x, [-1, hidden])
+                out = dense_layer(x_flat, **kwargs)
+                out = tf.reshape(out, [batch, seq, -1])
+                return out
+            else:
+                return dense_layer(tensor_x, **kwargs)
 
     def new_call(self, inputs, *args, **kwargs):
         print("[DEBUG] Patched call for TFOPTDecoderLayer")
@@ -761,7 +803,9 @@ def patch_attention_module(attn_module):
     Monkey-patch the call method of TFOPTAttention to always use the current
     k_proj, q_proj, v_proj, out_proj attributes (which may be hooks).
     """
-    orig_call = attn_module.call
+    # Save the original call method
+    if not hasattr(attn_module, '_original_call'):
+        attn_module._original_call = attn_module.call
 
     def new_call(self, hidden_states, attention_mask=None, **kwargs):
         print("[DEBUG] Patched call for TFOPTAttention")
