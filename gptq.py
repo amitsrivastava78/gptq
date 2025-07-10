@@ -30,32 +30,31 @@ class GPTQ:
         self.nsamples = 0
 
     def add_batch(self, inp, out):
-        if DEBUG:
-            self.inp1 = inp
-            self.out1 = out
-        if len(inp.shape) == 2:
-            inp = inp.unsqueeze(0)
-        tmp = inp.shape[0]
-        if isinstance(self.layer, nn.Linear) or isinstance(self.layer, transformers.Conv1D):
-            if len(inp.shape) == 3:
-                inp = inp.reshape((-1, inp.shape[-1]))
-            inp = inp.t()
-        if isinstance(self.layer, nn.Conv2d):
-            unfold = nn.Unfold(
-                self.layer.kernel_size,
-                dilation=self.layer.dilation,
-                padding=self.layer.padding,
-                stride=self.layer.stride
-            )
-            inp = unfold(inp)
-            inp = inp.permute([1, 0, 2])
-            inp = inp.flatten(1)
-        self.H *= self.nsamples / (self.nsamples + tmp)
-        self.nsamples += tmp
-        # inp = inp.float()
-        inp = math.sqrt(2 / self.nsamples) * inp.float()
-        # self.H += 2 / self.nsamples * inp.matmul(inp.t())
-        self.H += inp.matmul(inp.t())
+        print("Inside GPTQ add_batch")
+        print("Input shape:", inp.shape)
+        print("Output shape:", out.shape)
+
+        # For Keras Dense layers, accumulate Hessian over the OUTPUT dimension
+        if len(out.shape) == 3:
+            out = tf.reshape(out, [-1, out.shape[-1]])  # [batch*seq, output_features]
+        out = tf.transpose(out)  # [output_features, batch*seq]
+        num_new_samples = out.shape[1]
+
+        print("self.H shape:", self.H.shape)
+        print("out shape:", out.shape)
+        print("matmul shape:", tf.matmul(out, tf.transpose(out)).shape)
+
+        # 1. Running average update (use previous nsamples)
+        self.H = self.H * (self.nsamples / (self.nsamples + num_new_samples))
+
+        # 2. Increment nsamples BEFORE scaling
+        self.nsamples += num_new_samples
+
+        # 3. Scale new batch (use updated nsamples)
+        out = tf.sqrt(2.0 / tf.cast(self.nsamples, tf.float32)) * out
+
+        # 4. Accumulate Hessian
+        self.H = self.H + tf.matmul(out, tf.transpose(out))
 
     def fasterquant(
         self, blocksize=128, percdamp=.01, groupsize=-1, actorder=False, static_groups=False
