@@ -724,19 +724,28 @@ def patch_decoder_layer(layer):
             attention_mask = None
 
         x = hidden_states
+        print("[DEBUG] input to self_attn_layer_norm:", x.shape)
         x = self.self_attn_layer_norm(x)
+        print("[DEBUG] after self_attn_layer_norm:", x.shape)
         attn_outputs = self.self_attn(x, attention_mask=attention_mask, training=kwargs.get('training', False))
         x = attn_outputs[0] if isinstance(attn_outputs, (tuple, list)) else attn_outputs
+        print("[DEBUG] after self_attn:", x.shape)
         x = self.dropout(x, training=kwargs.get('training', False))
+        print("[DEBUG] after dropout:", x.shape)
         x = x + hidden_states
+        print("[DEBUG] after residual add:", x.shape)
 
         y = self.final_layer_norm(x)
+        print("[DEBUG] after final_layer_norm:", y.shape)
         y = flatten_dense_call(self.fc1, y)
+        print("[DEBUG] after fc1:", y.shape)
         y = flatten_dense_call(self.fc2, y)
+        print("[DEBUG] after fc2:", y.shape)
         y = self.dropout(y, training=kwargs.get('training', False))
-        # Only add residual if y and x have the same shape
+        print("[DEBUG] after dropout2:", y.shape)
         if y.shape == x.shape:
             y = y + x
+            print("[DEBUG] after MLP residual add:", y.shape)
         else:
             print(f"[WARNING] Skipping residual addition: y.shape={y.shape}, x.shape={x.shape}")
         return {'hidden_states': y}
