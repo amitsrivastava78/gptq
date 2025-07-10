@@ -57,28 +57,12 @@ class GPTQ:
         print("Inside GPTQ add_batch")
         # 1. Reshape 3D inputs to 2D. This leaves 2D inputs unchanged.
         if len(inp.shape) == 3:
-            inp = tf.reshape(inp, [-1, inp.shape[-1]])
-
-        # 2. Now that inp is guaranteed to be 2D, get the correct sample count.
-        # For a (B, S, F) input, num_new_samples will be B * S.
-        # For a (B, F) input, num_new_samples will be B.
-        num_new_samples = inp.shape[0]
-
-        # 3. Transpose the 2D input for the Hessian calculation.
-        # Shape becomes (features, num_samples).
-        inp = tf.transpose(inp)
-        
-        # 4. Update the running average and sample count correctly.
-        self.H = self.H * (self.nsamples / (self.nsamples + num_new_samples))
-        self.nsamples += num_new_samples
-        
-        # 5. Calculate the update for H.
-        inp_scaled = tf.sqrt(2.0 / self.nsamples) * tf.cast(inp, tf.float32)
-        print("After inp_scale")
-        X = tf.matmul(inp_scaled, tf.transpose(inp_scaled))
-        print("After matmul")
-        self.H += X
-        print("After add")
+            inp = tf.reshape(inp, [-1, inp.shape[-1]])  # [batch*seq, features]
+        inp = tf.transpose(inp)  # [features, batch*seq]
+        print("self.H shape:", self.H.shape)
+        print("inp shape:", inp.shape)
+        print("matmul shape:", tf.matmul(inp, tf.transpose(inp)).shape)
+        self.H = self.H + tf.matmul(inp, tf.transpose(inp))  # [features, features]
 
     def fasterquant(self, blocksize=128, percdamp=.01, groupsize=-1, actorder=False, static_groups=False):
         W = tf.convert_to_tensor(self.layer.weights[0].numpy(), dtype=tf.float32)
