@@ -74,7 +74,11 @@ class GPTQ:
         
         # 5. Calculate the update for H.
         inp_scaled = tf.sqrt(2.0 / self.nsamples) * tf.cast(inp, tf.float32)
-        self.H += tf.matmul(inp_scaled, tf.transpose(inp_scaled))
+        print("After inp_scale")
+        X = tf.matmul(inp_scaled, tf.transpose(inp_scaled))
+        print("After matmul")
+        self.H += X
+        print("After add")
 
     def fasterquant(self, blocksize=128, percdamp=.01, groupsize=-1, actorder=False, static_groups=False):
         W = tf.convert_to_tensor(self.layer.weights[0].numpy(), dtype=tf.float32)
