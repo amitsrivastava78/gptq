@@ -261,47 +261,47 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 self.dense_layer = dense_layer
                 self.gptq_obj = gptq_obj
             def call(self, inputs, **kwargs):
+                layer_name = self.dense_layer.name
                 # If input is a dict, extract hidden_states
                 if isinstance(inputs, dict) and 'hidden_states' in inputs:
                     inputs = inputs['hidden_states']
-                
-                # Get actual shape values, not tensors
-                input_shape = inputs.shape
-                rank = len(input_shape)
-                print(f"DenseHook input shape: {input_shape}")
-                
-                # Debug: Check the Dense layer's weight shape
-                weight_shape = self.dense_layer.kernel.shape
-                print(f"DenseHook layer {self.dense_layer.name} weight shape: {weight_shape}")
-                
-                # For attention projections (k_proj, q_proj, v_proj, out_proj), keep 3D shape
-                # For MLP layers (fc1, fc2), flatten to 2D
-                layer_name = self.dense_layer.name
+                print(f"[DenseHook] {layer_name} input shape: {inputs.shape}")
                 if layer_name in ['k_proj', 'q_proj', 'v_proj', 'out_proj']:
-                    # Attention projections: keep 3D input/output
                     outputs = self.dense_layer(inputs, **kwargs)
-                    print(f"DenseHook attention output shape: {outputs.shape}")
-                    # For quantization, flatten both input and output
-                    flat_inputs = tf.reshape(inputs, [-1, inputs.shape[-1]])
-                    flat_outputs = tf.reshape(outputs, [-1, outputs.shape[-1]])
+                    if isinstance(outputs, dict) and 'hidden_states' in outputs:
+                        outputs = outputs['hidden_states']
+                    print(f"[DenseHook] {layer_name} output shape: {outputs.shape}")
+                    in_shape = inputs.shape
+                    flat_inputs = tf.reshape(inputs, [-1, in_shape[-1]])
+                    out_shape = outputs.shape
+                    flat_outputs = tf.reshape(outputs, [-1, out_shape[-1]])
                     self.gptq_obj.add_batch(flat_inputs, flat_outputs)
                 else:
-                    # MLP layers: flatten to 2D
+                    if isinstance(inputs, dict) and 'hidden_states' in inputs:
+                        inputs = inputs['hidden_states']
+                    input_shape = inputs.shape
+                    rank = len(input_shape)
                     if rank == 3:
                         batch, seq, hidden = input_shape
                         flat_inputs = tf.reshape(inputs, [-1, hidden])
+                        print(f"[DenseHook] {layer_name} flat_inputs shape: {flat_inputs.shape}")
                         outputs = self.dense_layer(flat_inputs, **kwargs)
+                        if isinstance(outputs, dict) and 'hidden_states' in outputs:
+                            outputs = outputs['hidden_states']
+                        print(f"[DenseHook] {layer_name} dense output shape: {outputs.shape}")
                         out_shape = outputs.shape
                         outputs = tf.reshape(outputs, [batch, seq, out_shape[-1]])
-                        print(f"DenseHook MLP output shape: {outputs.shape}")
-                        self.gptq_obj.add_batch(flat_inputs, tf.reshape(outputs, [-1, outputs.shape[-1]]))
+                        print(f"[DenseHook] {layer_name} reshaped output shape: {outputs.shape}")
+                        self.gptq_obj.add_batch(flat_inputs, tf.reshape(outputs, [-1, out_shape[-1]]))
                     elif rank == 2:
                         outputs = self.dense_layer(inputs, **kwargs)
-                        print(f"DenseHook MLP output shape: {outputs.shape}")
+                        if isinstance(outputs, dict) and 'hidden_states' in outputs:
+                            outputs = outputs['hidden_states']
+                        print(f"[DenseHook] {layer_name} output shape: {outputs.shape}")
+                        out_shape = outputs.shape
                         self.gptq_obj.add_batch(inputs, outputs)
                     else:
                         raise ValueError(f"DenseHook: Unexpected input rank {rank}, shape {input_shape}")
-                
                 return outputs
 
         # Replace each Dense layer in the transformer block with a hooked version
@@ -353,7 +353,9 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
 
         # 7. Call the layer ONCE to collect calibration data
         try:
-            print(f"Calling layer {i} after all Dense replacements, input shape: {inps.shape}")
+            # Ensure inps is a tensor for shape access
+            _inps = inps['hidden_states'] if isinstance(inps, dict) and 'hidden_states' in inps else inps
+            print(f"Calling layer {i} after all Dense replacements, input shape: {_inps.shape}")
             inputs = {'hidden_states': inps}
             if attention_mask is not None:
                 inputs['attention_mask'] = attention_mask
@@ -364,30 +366,11 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 inps = outs['hidden_states']
             else:
                 inps = outs
-            print(f"Layer {i} output shape: {inps.shape}")
+            _inps = inps['hidden_states'] if isinstance(inps, dict) and 'hidden_states' in inps else inps
+            print(f"Layer {i} output shape: {_inps.shape}")
         except Exception as e:
             print(f"Error processing layer {i} after all Dense replacements: {e}")
             continue
-
-        # 8. Quantize all layers after calibration data is collected
-        for name, dense_layer in subset.items():
-            try:
-                print(f"Quantizing layer {i}, {name}")
-                original_weight = dense_layer.weights[0].numpy().copy()
-                gptq[name].fasterquant(
-                    blocksize=getattr(args, 'blocksize', 128),
-                    percdamp=args.percdamp,
-                    groupsize=args.groupsize,
-                    actorder=getattr(args, 'act_order', False),
-                    static_groups=getattr(args, 'static_groups', False)
-                )
-                quantizers[f'layer_{i}.{name}'] = gptq[name].quantizer
-                quantized_weight = dense_layer.weights[0].numpy()
-                print(f"Quantized weight range: [{np.min(quantized_weight):.6f}, {np.max(quantized_weight):.6f}]")
-                weight_change = np.mean(np.abs(original_weight - quantized_weight))
-                print(f"Average weight change: {weight_change:.6f}")
-            except Exception as e:
-                print(f"Error quantizing layer {i}, {name}: {e}")
 
         # 9. Restore original layers after quantization
         for name, dense_layer in subset.items():
@@ -403,7 +386,8 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
 
         # Process the input through the hooked layer
         try:
-            print(f"Calling layer {i} after all Dense replacements, input shape: {inps.shape}")
+            _inps = inps['hidden_states'] if isinstance(inps, dict) and 'hidden_states' in inps else inps
+            print(f"Calling layer {i} after all Dense replacements, input shape: {_inps.shape}")
             inputs = {'hidden_states': inps}
             if attention_mask is not None:
                 inputs['attention_mask'] = attention_mask
@@ -471,6 +455,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         
         # Process outputs again after quantization
         try:
+            _inps = inps['hidden_states'] if isinstance(inps, dict) and 'hidden_states' in inps else inps
             inputs = {'hidden_states': inps}
             if attention_mask is not None:
                 inputs['attention_mask'] = attention_mask
@@ -807,14 +792,10 @@ if __name__ == "__main__":
         else:
             raise ValueError(f"Unknown dataset: {args.dataset}")
         # Use a safe approach to select samples
-        try:
-            if hasattr(dataset, 'select'):
-                dataset = dataset.select(range(args.nsamples))
-            else:
-                # Fallback: convert to list and slice
-                dataset = list(dataset)[:args.nsamples]
-        except Exception:
-            # Fallback: convert to list and slice
+        from datasets import Dataset
+        if isinstance(dataset, Dataset):
+            dataset = dataset.select(range(args.nsamples))
+        else:
             dataset = list(dataset)[:args.nsamples]
     except Exception as e:
         print(f"Error loading dataset: {e}")
