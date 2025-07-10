@@ -54,7 +54,7 @@ class GPTQ:
 
     def add_batch(self, inp, out):
     # --- Corrected Logic ---
-
+        print("Inside GPTQ add_batch")
         # 1. Reshape 3D inputs to 2D. This leaves 2D inputs unchanged.
         if len(inp.shape) == 3:
             inp = tf.reshape(inp, [-1, inp.shape[-1]])

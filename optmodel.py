@@ -299,6 +299,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                             outputs = outputs['hidden_states']
                         print(f"[DenseHook] Rank2 {layer_name} output shape: {outputs.shape}")
                         out_shape = outputs.shape
+                        print("before call to add_batch")
                         self.gptq_obj.add_batch(inputs, outputs)
                     else:
                         raise ValueError(f"DenseHook: Unexpected input rank {rank}, shape {input_shape}")
