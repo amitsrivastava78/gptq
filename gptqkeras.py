@@ -27,7 +27,9 @@ class GPTQ:
         # Note: No Conv1D equivalent in Keras, so we skip that check
         self.rows = int(W.shape[0])
         self.columns = int(W.shape[1])
-        self.H = tf.zeros((self.rows, self.rows), dtype=tf.float32)
+        input_dim = int(W.shape[0])
+        output_dim = int(W.shape[1])
+        self.H = tf.zeros((output_dim, output_dim), dtype=tf.float32)
         print(f"The HESSAIN MATRIX shape is {self.H.shape}")
         self.nsamples = 0
         self.quantizer = None
