@@ -59,9 +59,13 @@ class GPTQ:
         if len(inp.shape) == 3:
             inp = tf.reshape(inp, [-1, inp.shape[-1]])  # [batch*seq, features]
         inp = tf.transpose(inp)  # [features, batch*seq]
+        num_new_samples = inp.shape[1]  # number of columns = number of samples
         print("self.H shape:", self.H.shape)
         print("inp shape:", inp.shape)
         print("matmul shape:", tf.matmul(inp, tf.transpose(inp)).shape)
+        self.H = self.H * (self.nsamples / (self.nsamples + num_new_samples))
+        self.nsamples += num_new_samples
+        inp = tf.sqrt(2.0 / tf.cast(self.nsamples, tf.float32)) * inp  # <-- Add this line
         self.H = self.H + tf.matmul(inp, tf.transpose(inp))  # [features, features]
 
     def fasterquant(self, blocksize=128, percdamp=.01, groupsize=-1, actorder=False, static_groups=False):
