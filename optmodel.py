@@ -288,7 +288,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                         outputs = self.dense_layer(flat_inputs, **kwargs)
                         if isinstance(outputs, dict) and 'hidden_states' in outputs:
                             outputs = outputs['hidden_states']
-                        print(f"[DenseHook] {layer_name} dense output shape: {outputs.shape}")
+                        print(f"[DenseHook] Rank3 {layer_name} dense output shape: {outputs.shape}")
                         out_shape = outputs.shape
                         outputs = tf.reshape(outputs, [batch, seq, out_shape[-1]])
                         print(f"[DenseHook] {layer_name} reshaped output shape: {outputs.shape}")
@@ -297,7 +297,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                         outputs = self.dense_layer(inputs, **kwargs)
                         if isinstance(outputs, dict) and 'hidden_states' in outputs:
                             outputs = outputs['hidden_states']
-                        print(f"[DenseHook] {layer_name} output shape: {outputs.shape}")
+                        print(f"[DenseHook] Rank2 {layer_name} output shape: {outputs.shape}")
                         out_shape = outputs.shape
                         self.gptq_obj.add_batch(inputs, outputs)
                     else:
