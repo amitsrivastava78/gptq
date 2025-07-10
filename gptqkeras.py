@@ -56,6 +56,9 @@ class GPTQ:
     #     self.H = self.H + tf.matmul(inp, tf.transpose(inp))
 
     def add_batch(self, inp, out):
+        if inp is None or out is None:
+            print("add_batch received None input or output, skipping.")
+            return
         print("Inside GPTQ add_batch")
         print("Input shape:", inp.shape)
         print("Output shape:", out.shape)

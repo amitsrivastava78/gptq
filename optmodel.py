@@ -262,6 +262,10 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
                 self.gptq_obj = gptq_obj
             def call(self, inputs, **kwargs):
                 layer_name = self.dense_layer.name
+                if inputs is None:
+                    print(f"[DenseHook] {self.dense_layer.name} received None as input, skipping.")
+                    return None
+
                 # If input is a dict, extract hidden_states
                 if isinstance(inputs, dict) and 'hidden_states' in inputs:
                     inputs = inputs['hidden_states']
