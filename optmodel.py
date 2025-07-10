@@ -725,19 +725,20 @@ def patch_decoder_layer(layer):
 
         x = hidden_states
         x = self.self_attn_layer_norm(x)
-        # Patch all Dense calls in attention if needed
         attn_outputs = self.self_attn(x, attention_mask=attention_mask, training=kwargs.get('training', False))
         x = attn_outputs[0] if isinstance(attn_outputs, (tuple, list)) else attn_outputs
         x = self.dropout(x, training=kwargs.get('training', False))
         x = x + hidden_states
 
         y = self.final_layer_norm(x)
-        # Patch fc1/fc2
         y = flatten_dense_call(self.fc1, y)
         y = flatten_dense_call(self.fc2, y)
         y = self.dropout(y, training=kwargs.get('training', False))
-        y = y + x
-
+        # Only add residual if y and x have the same shape
+        if y.shape == x.shape:
+            y = y + x
+        else:
+            print(f"[WARNING] Skipping residual addition: y.shape={y.shape}, x.shape={x.shape}")
         return {'hidden_states': y}
     layer.call = new_call.__get__(layer, layer.__class__)
 
