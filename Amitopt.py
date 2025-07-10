@@ -21,6 +21,7 @@ def get_wikitext2(tokenizer, sequence_length=128, batch_size=8):
 
     # Filter out empty lines
     train_dataset = train_dataset.filter(lambda example: example['text'] != '')
+    print(f"Number of examples after filtering: {len(train_dataset)}")
 
     # Tokenize the dataset
     def tokenize_function(examples):
@@ -60,6 +61,7 @@ def get_ptb(tokenizer, sequence_length=128, batch_size=8):
 
     # Filter out empty lines (the 'text' loader creates a 'text' column)
     train_dataset = train_dataset.filter(lambda example: example['text'] != '')
+    print(f"Number of examples after filtering: {len(train_dataset)}")
 
     # Tokenize the dataset
     def tokenize_function(examples):

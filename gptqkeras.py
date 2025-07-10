@@ -31,25 +31,50 @@ class GPTQ:
         self.nsamples = 0
         self.quantizer = None
 
+    # def add_batch(self, inp, out):
+    #     if DEBUG:
+    #         self.inp1 = inp
+    #         self.out1 = out
+    #     if len(inp.shape) == 2:
+    #         inp = tf.expand_dims(inp, 0)
+    #     tmp = inp.shape[0]
+    #     if isinstance(self.layer, keras.layers.Dense):
+    #         if len(inp.shape) == 3:
+    #             inp = tf.reshape(inp, [-1, inp.shape[-1]])
+    #         inp = tf.transpose(inp)
+    #     print("Shape before matmul:", inp.shape)
+    #     if isinstance(self.layer, keras.layers.Conv2D):
+    #         # Keras doesn't have Unfold, so we'll skip this for now
+    #         # This would need a custom implementation for Conv2D
+    #         pass
+    #     self.H = self.H * (self.nsamples / (self.nsamples + tmp))
+    #     self.nsamples += tmp
+    #     inp = math.sqrt(2 / self.nsamples) * tf.cast(inp, tf.float32)
+    #     self.H = self.H + tf.matmul(inp, tf.transpose(inp))
+
     def add_batch(self, inp, out):
-        if DEBUG:
-            self.inp1 = inp
-            self.out1 = out
-        if len(inp.shape) == 2:
-            inp = tf.expand_dims(inp, 0)
-        tmp = inp.shape[0]
-        if isinstance(self.layer, keras.layers.Dense):
-            if len(inp.shape) == 3:
-                inp = tf.reshape(inp, [-1, inp.shape[-1]])
-            inp = tf.transpose(inp)
-        if isinstance(self.layer, keras.layers.Conv2D):
-            # Keras doesn't have Unfold, so we'll skip this for now
-            # This would need a custom implementation for Conv2D
-            pass
-        self.H = self.H * (self.nsamples / (self.nsamples + tmp))
-        self.nsamples += tmp
-        inp = math.sqrt(2 / self.nsamples) * tf.cast(inp, tf.float32)
-        self.H = self.H + tf.matmul(inp, tf.transpose(inp))
+    # --- Corrected Logic ---
+
+        # 1. Reshape 3D inputs to 2D. This leaves 2D inputs unchanged.
+        if len(inp.shape) == 3:
+            inp = tf.reshape(inp, [-1, inp.shape[-1]])
+
+        # 2. Now that inp is guaranteed to be 2D, get the correct sample count.
+        # For a (B, S, F) input, num_new_samples will be B * S.
+        # For a (B, F) input, num_new_samples will be B.
+        num_new_samples = inp.shape[0]
+
+        # 3. Transpose the 2D input for the Hessian calculation.
+        # Shape becomes (features, num_samples).
+        inp = tf.transpose(inp)
+        
+        # 4. Update the running average and sample count correctly.
+        self.H = self.H * (self.nsamples / (self.nsamples + num_new_samples))
+        self.nsamples += num_new_samples
+        
+        # 5. Calculate the update for H.
+        inp_scaled = tf.sqrt(2.0 / self.nsamples) * tf.cast(inp, tf.float32)
+        self.H += tf.matmul(inp_scaled, tf.transpose(inp_scaled))
 
     def fasterquant(self, blocksize=128, percdamp=.01, groupsize=-1, actorder=False, static_groups=False):
         W = tf.convert_to_tensor(self.layer.weights[0].numpy(), dtype=tf.float32)
