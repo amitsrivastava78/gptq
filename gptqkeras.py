@@ -28,6 +28,7 @@ class GPTQ:
         self.rows = int(W.shape[0])
         self.columns = int(W.shape[1])
         self.H = tf.zeros((self.rows, self.rows), dtype=tf.float32)
+        print(f"The HESSAIN MATRIX shape is {self.H.shape}")
         self.nsamples = 0
         self.quantizer = None
 
