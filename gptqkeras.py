@@ -56,20 +56,32 @@ class GPTQ:
     #     self.H = self.H + tf.matmul(inp, tf.transpose(inp))
 
     def add_batch(self, inp, out):
-    # --- Corrected Logic ---
         print("Inside GPTQ add_batch")
-        # 1. Reshape 3D inputs to 2D. This leaves 2D inputs unchanged.
-        if len(inp.shape) == 3:
-            inp = tf.reshape(inp, [-1, inp.shape[-1]])  # [batch*seq, features]
-        inp = tf.transpose(inp)  # [features, batch*seq]
-        num_new_samples = inp.shape[1]  # number of columns = number of samples
+        print("Input shape:", inp.shape)
+        print("Output shape:", out.shape)
+        
+        # For Keras Dense layers, we want to accumulate the Hessian over the OUTPUT dimension
+        # The Hessian should be (output_dim, output_dim)
+        
+        # 1. Reshape 3D outputs to 2D. This leaves 2D outputs unchanged.
+        if len(out.shape) == 3:
+            out = tf.reshape(out, [-1, out.shape[-1]])  # [batch*seq, output_features]
+        
+        # 2. Transpose to get (output_features, batch*seq)
+        out = tf.transpose(out)  # [output_features, batch*seq]
+        num_new_samples = out.shape[1]  # number of columns = number of samples
+        
         print("self.H shape:", self.H.shape)
-        print("inp shape:", inp.shape)
-        print("matmul shape:", tf.matmul(inp, tf.transpose(inp)).shape)
+        print("out shape:", out.shape)
+        print("matmul shape:", tf.matmul(out, tf.transpose(out)).shape)
+        
+        # 3. Update Hessian with running average
         self.H = self.H * (self.nsamples / (self.nsamples + num_new_samples))
         self.nsamples += num_new_samples
-        inp = tf.sqrt(2.0 / tf.cast(self.nsamples, tf.float32)) * inp  # <-- Add this line
-        self.H = self.H + tf.matmul(inp, tf.transpose(inp))  # [features, features]
+        
+        # 4. Scale and accumulate
+        out = tf.sqrt(2.0 / tf.cast(self.nsamples, tf.float32)) * out
+        self.H = self.H + tf.matmul(out, tf.transpose(out))  # [output_features, output_features]
 
     def fasterquant(self, blocksize=128, percdamp=.01, groupsize=-1, actorder=False, static_groups=False):
         W = tf.convert_to_tensor(self.layer.weights[0].numpy(), dtype=tf.float32)
