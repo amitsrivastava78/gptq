@@ -875,22 +875,45 @@ if __name__ == "__main__":
 
     # Test quantization effectiveness
     print("\n=== Quantization Verification ===")
-    total_weight_change = 0
-    total_weights = 0
-    quantized_layers = 0
     
-    # More comprehensive weight analysis
-    for layer in model.layers:
-        if hasattr(layer, 'weights') and layer.weights:
-            for weight in layer.weights:
-                if 'dense' in weight.name.lower() or 'linear' in weight.name.lower():
-                    weight_np = weight.numpy()
-                    weight_change = np.mean(np.abs(weight_np))
-                    weight_std = np.std(weight_np)
-                    total_weight_change += weight_change
-                    total_weights += 1
-                    quantized_layers += 1
-                    print(f"Weight {weight.name}: mean={weight_change:.6f}, std={weight_std:.6f}")
+    class WeightAnalyzer:
+        def __init__(self):
+            self.total_weight_change = 0
+            self.total_weights = 0
+            self.quantized_layers = 0
+        
+        def analyze_weights_recursive(self, module, depth=0):
+            """Recursively analyze weights in all submodules"""
+            
+            # Check if this module has weights
+            if hasattr(module, 'weights') and module.weights:
+                for weight in module.weights:
+                    # Look for Dense layer weights (which are the ones we quantize)
+                    if isinstance(module, keras.layers.Dense) or 'dense' in weight.name.lower():
+                        weight_np = weight.numpy()
+                        weight_change = np.mean(np.abs(weight_np))
+                        weight_std = np.std(weight_np)
+                        self.total_weight_change += weight_change
+                        self.total_weights += 1
+                        self.quantized_layers += 1
+                        print(f"Weight {weight.name} in {module.name}: mean={weight_change:.6f}, std={weight_std:.6f}")
+            
+            # Recursively check submodules
+            if hasattr(module, 'submodules'):
+                for submodule in module.submodules:
+                    self.analyze_weights_recursive(submodule, depth + 1)
+            
+            # Also check layers attribute (for Sequential-like modules)
+            if hasattr(module, 'layers'):
+                for layer in module.layers:
+                    self.analyze_weights_recursive(layer, depth + 1)
+    
+    # Start analysis from the model root
+    analyzer = WeightAnalyzer()
+    analyzer.analyze_weights_recursive(model)
+    total_weight_change = analyzer.total_weight_change
+    total_weights = analyzer.total_weights
+    quantized_layers = analyzer.quantized_layers
     
     if total_weights > 0:
         avg_weight_change = total_weight_change / total_weights
