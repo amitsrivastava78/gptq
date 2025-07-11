@@ -629,7 +629,7 @@ def opt_eval_keras(model, testloader, args, tokenizer=None):
         print("NaN detected in average loss!")
         exit(1)
     ppl = np.exp(avg_loss)
-    print(f'Perplexity: {ppl:.2f}')
+    print(ppl)  # PyTorch-style: print perplexity as raw float
     return ppl
 
 def find_parent_and_attr(root, target_layer):
@@ -781,6 +781,7 @@ if __name__ == "__main__":
     args.hidden_size = model.config.hidden_size
     # Call opt_sequential_keras
     print('Starting ...')
+    # This will print the decoder layer indices (0, 1, ..., 11) **before** the perplexity for each dataset, just like PyTorch.
     quantizers = opt_sequential_keras(model, dataloader, args, quantization_type='gptq')
     print('Quantization complete.')
     print(f'Total quantizers: {len(quantizers)}')
@@ -862,9 +863,11 @@ if __name__ == "__main__":
 
             print(dataset_name)
             print("Evaluating ...")
+            # Quantize for this dataset (prints 0, 1, ..., 11)
+            quantizers = opt_sequential_keras(model, dataloader, args, quantization_type='gptq')
             testloader = make_dataloader(eval_samples, batch_size=8)
             ppl = opt_eval_keras(model, testloader, args, tokenizer)
-            print(f"Perplexity: {ppl:.2f}")
+            # No formatted perplexity print here
         except Exception as e:
             print(f"Error evaluating on {dataset_name}: {e}")
             continue
