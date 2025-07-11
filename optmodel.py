@@ -588,19 +588,13 @@ def make_dataloader(encodings, batch_size=1):
 
 # --- Evaluation loop, ported to Keras 3.0 ---
 def opt_eval_keras(model, testloader, args, tokenizer=None):
-    print('Evaluating ...')
+    # PyTorch-style: only print perplexity at the end, and error/warning if NaN or no valid tokens
     nsamples = 0
     nlls = []
     total_tokens = 0
     seqlen = args.seqlen
     pad_token_id = tokenizer.pad_token_id if tokenizer else 0
-    
-    # Add metrics tracking
-    batch_losses = []
-    batch_token_counts = []
-
     for i, batch in enumerate(testloader):
-        print(f"Processing batch {i}")
         batch = np.array(batch)
         batch_size = batch.shape[0]
         nsamples += batch_size
@@ -612,50 +606,29 @@ def opt_eval_keras(model, testloader, args, tokenizer=None):
             logits_tensor = outputs[0]
         else:
             logits_tensor = outputs
-
         shift_logits = logits_tensor[:, :-1, :]
         shift_labels = batch[:, 1:]
-
-        # Mask out padding tokens
         mask = (shift_labels != pad_token_id)
         loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
-        loss = loss_fn(shift_labels, shift_logits)  # shape: (batch, seqlen-1)
-        loss = loss * mask  # zero out loss for padding tokens
+        loss = loss_fn(shift_labels, shift_logits)
+        loss = loss * mask
         nll = np.sum(loss)
         nlls.append(nll)
         batch_tokens = np.sum(mask)
         total_tokens += batch_tokens
-        
-        # Store metrics for analysis
-        batch_losses.append(nll)
-        batch_token_counts.append(batch_tokens)
-        
-        print(f"Batch {i}: NLL = {nll:.2f}, tokens = {batch_tokens}")
-        if i < 3:  # Only print details for first few batches to avoid spam
-            print("First few shift_labels:", shift_labels[:2])
-            print("First few mask values:", mask[:2])
         if np.isnan(loss).any():
             print("NaN detected in loss!")
-    
+            exit(1)
     total_nll = np.sum(nlls)
-    print(f"Total NLL: {total_nll}, Total tokens: {total_tokens}")
     if total_tokens == 0:
         print("No valid tokens to evaluate! Check your mask and data.")
         return float('inf')
     avg_loss = total_nll / total_tokens
-    print(f"Average loss per token: {avg_loss}")
     if np.isnan(avg_loss):
         print("NaN detected in average loss!")
+        exit(1)
     ppl = np.exp(avg_loss)
     print(f'Perplexity: {ppl:.2f}')
-    
-    # Additional metrics
-    if len(batch_losses) > 1:
-        avg_batch_loss = np.mean(batch_losses)
-        std_batch_loss = np.std(batch_losses)
-        print(f"Average batch loss: {avg_batch_loss:.2f} ± {std_batch_loss:.2f}")
-        print(f"Loss range: [{np.min(batch_losses):.2f}, {np.max(batch_losses):.2f}]")
-    
     return ppl
 
 def find_parent_and_attr(root, target_layer):
@@ -862,11 +835,33 @@ if __name__ == "__main__":
                 testset = load_dataset("ptb_text_only", "penn_treebank", split="test")
             else:
                 continue
-            # testset = testset.select(range(100))  # or testset = testset[:100]
-            test_data = prepare_calib_data(testset, tokenizer, nsamples=args.nsamples, seqlen=args.seqlen)
-            testloader = make_dataloader(test_data, batch_size=8)
+
+            # Concatenate all texts
+            texts = []
+            for item in testset:
+                if 'text' in item:
+                    texts.append(item['text'])
+                elif 'sentence' in item:
+                    texts.append(item['sentence'])
+            full_text = " ".join(texts)
+
+            # Tokenize as one long sequence
+            encodings = tokenizer(full_text, return_tensors="np")["input_ids"].flatten()
+            seqlen = args.seqlen
+            nsamples = (len(encodings) - 1) // seqlen
+
+            # Prepare evaluation samples (chunks of seqlen + 1)
+            eval_samples = []
+            for i in range(nsamples):
+                start = i * seqlen
+                end = start + seqlen + 1
+                eval_samples.append(encodings[start:end])
+            eval_samples = np.stack(eval_samples)
+
             print(dataset_name)
-            opt_eval_keras(model, testloader, args, tokenizer)
+            testloader = make_dataloader(eval_samples, batch_size=8)
+            ppl = opt_eval_keras(model, testloader, args, tokenizer)
+            print(f"Perplexity: {ppl:.2f}")
         except Exception as e:
             print(f"Error evaluating on {dataset_name}: {e}")
             continue
