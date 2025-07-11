@@ -906,14 +906,15 @@ if __name__ == "__main__":
                 
                 if scale_val != 0.0 or zero_val != 0.0:
                     valid_quantizers += 1
-                    print(f"  ✅ {name}: scale={scale_val:.6f}, zero={zero_val:.6f}")
+                    # print(f"  ✅ {name}: scale={scale_val:.6f}, zero={zero_val:.6f}")
                 else:
-                    print(f"  ⚠️  {name}: scale={scale_val:.6f}, zero={zero_val:.6f} (may not be properly quantized)")
+                    # print(f"  ⚠️  {name}: scale={scale_val:.6f}, zero={zero_val:.6f} (may not be properly quantized)")
             else:
                 print(f"  ❌ {name}: missing scale or zero attributes")
         
         if valid_quantizers > 0:
             print(f"\n✅ Quantization appears to be working ({valid_quantizers}/{len(quantizers)} valid quantizers)")
+            exit(1)
         else:
             print(f"\n❌ No valid quantizers found. Quantization may not be working properly.")
             print("Exiting to debug quantization issues...")
