@@ -31,9 +31,12 @@ class ActivationCatcher(keras.layers.Layer):
     cache = {}
     
     def __init__(self, module):
+        print('📌 ENTRY: ActivationCatcher.__init__')
         super().__init__()
         self.module = module
+        print('📌 EXIT: ActivationCatcher.__init__')
     def call(self, inputs, **kwargs):
+        print('📌 ENTRY: ActivationCatcher.call')
         print("ActivationCatcher triggered!")
         ActivationCatcher.cache['current_input'] = inputs
         print("Cache after assignment:", ActivationCatcher.cache)
@@ -57,6 +60,7 @@ class ActivationCatcher(keras.layers.Layer):
                 batch_size = 1
                 seq_len = 1
             ActivationCatcher.cache['attention_mask'] = tf.ones((batch_size, seq_len), dtype=tf.int32)
+        print('📌 EXIT: ActivationCatcher.call')
         raise ValueError("Catcher activated")
 
 def find_layers(module):
@@ -97,10 +101,12 @@ def find_layers(module):
     return layers
 
 def find_layers_tf_opt(module):
+    print('📌 ENTRY: find_layers_tf_opt')
     layers = {}
     for layer in module.submodules:
         if 'dense' in type(layer).__name__.lower() or 'dense' in str(type(layer)).lower():
             layers[layer.name] = layer
+    print(f'📌 EXIT: find_layers_tf_opt - found {len(layers)} layers')
     return layers
 
 def debug_layer_structure(module, max_depth=3, current_depth=0):
@@ -167,11 +173,14 @@ def inspect_model_structure(model, max_depth=3):
 # === Helper Class ===
 class DenseHook(keras.layers.Layer):
     def __init__(self, dense_layer, gptq_obj):
+        print('📌 ENTRY: DenseHook.__init__')
         super().__init__()
         self.dense_layer = dense_layer
         self.gptq_obj = gptq_obj
         self.called = False
+        print('📌 EXIT: DenseHook.__init__')
     def call(self, inputs, **kwargs):
+        print('📌 ENTRY: DenseHook.call')
         if self.called:
             return self.dense_layer(inputs, **kwargs)
         self.called = True
@@ -269,15 +278,18 @@ class DenseHook(keras.layers.Layer):
         else:
             print(f"[DenseHook] Skipping add_batch for {layer_name} - GPTQ object not properly initialized")
         
+        print('📌 EXIT: DenseHook.call')
         return outputs
 
 def reset_all_densehook_flags(module):
     """Recursively reset the .called flag on all DenseHook instances in the model."""
+    print('📌 ENTRY: reset_all_densehook_flags')
     if hasattr(module, 'submodules'):
         for submodule in module.submodules:
             if isinstance(submodule, DenseHook):
                 submodule.called = False
             reset_all_densehook_flags(submodule)
+    print('📌 EXIT: reset_all_densehook_flags')
 
 def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     """
@@ -292,11 +304,13 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
          d. Quantize
       4. Remove all DenseHook instances from the model
     """
+    print('🚀 ENTRY: opt_sequential_keras')
     print('Starting ...')
     print(f'[DEBUG] nsamples: {getattr(args, "nsamples", "unknown")}')
 
     # === 1. Patch model layers for calibration ===
     def patch_all_decoder_layers(model):
+        print('📌 ENTRY: patch_all_decoder_layers')
         if hasattr(model, 'model') and hasattr(model.model, 'decoder') and hasattr(model.model.decoder, 'layers'):
             layers = model.model.decoder.layers
             print(f"Found {len(layers)} transformer layers")
@@ -305,12 +319,14 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
             layers = list(model.submodules)
         for layer in layers:
             patch_decoder_layer(layer)
+        print('📌 EXIT: patch_all_decoder_layers')
         return layers
 
     layers = patch_all_decoder_layers(model)
 
     # === 2. Collect calibration input ===
     def collect_calibration_input(model, dataloader, args, layers):
+        print('📌 ENTRY: collect_calibration_input')
         ActivationCatcher.cache = {'attention_mask': None, 'current_input': None}
         original_first_layer = layers[0]
         layers[0] = ActivationCatcher(original_first_layer)
@@ -326,7 +342,9 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
         inps = ActivationCatcher.cache['current_input']
         attention_mask = ActivationCatcher.cache['attention_mask']
         if inps is None:
+            print("Warning input after the calibration was ZERO")
             inps = tf.zeros((1, args.seqlen, args.hidden_size), dtype=tf.float32)
+        print('📌 EXIT: collect_calibration_input')
         return inps, attention_mask
 
     inps, attention_mask = collect_calibration_input(model, dataloader, args, layers)
@@ -362,23 +380,28 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     print(f'Total quantizers: {len(quantizers)}')
     # Remove all DenseHook instances from the model
     remove_all_dense_hooks(model)
+    print('🏁 EXIT: opt_sequential_keras')
     return quantizers
 
 # === Helper Functions ===
 def run_layer(layer, inps, attention_mask):
+    print('📌 ENTRY: run_layer')
     _inps = get_tensor(inps)
     inputs = {'hidden_states': inps}
     if attention_mask is not None:
         inputs['attention_mask'] = attention_mask
     outs = layer(inputs)
     if isinstance(outs, (tuple, list)):
-        return outs[0]
+        result = outs[0]
     elif isinstance(outs, dict) and 'hidden_states' in outs:
-        return outs['hidden_states']
+        result = outs['hidden_states']
     else:
-        return outs
+        result = outs
+    print('📌 EXIT: run_layer')
+    return result
 
 def setup_gptq_and_hooks(subset, args):
+    print('📌 ENTRY: setup_gptq_and_hooks')
     gptq = {}
     hook_instances = {}
     for name, dense_layer in subset.items():
@@ -390,9 +413,11 @@ def setup_gptq_and_hooks(subset, args):
         gptq[name].quantizer = quantizer
         hook = DenseHook(dense_layer, gptq[name])
         hook_instances[name] = hook
+    print('📌 EXIT: setup_gptq_and_hooks')
     return gptq, hook_instances
 
 def replace_dense_with_hooks(layer, subset, hook_instances):
+    print('📌 ENTRY: replace_dense_with_hooks')
     for name, dense_layer in subset.items():
         result = find_parent_and_attr(layer, dense_layer)
         if result is not None:
@@ -400,8 +425,10 @@ def replace_dense_with_hooks(layer, subset, hook_instances):
             setattr(parent, attr_name, hook_instances[name])
         if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, name):
             setattr(layer.self_attn, name, hook_instances[name])
+    print('📌 EXIT: replace_dense_with_hooks')
 
 def restore_dense_layers(layer, subset):
+    print('📌 ENTRY: restore_dense_layers')
     for name, dense_layer in subset.items():
         result = find_parent_and_attr(layer, dense_layer)
         if result is not None:
@@ -426,8 +453,10 @@ def restore_dense_layers(layer, subset):
                 restore_hooks_recursive(submodule)
     
     restore_hooks_recursive(layer)
+    print('📌 EXIT: restore_dense_layers')
 
 def quantize_dense_layers(subset, gptq, quantizers, args, quantization_type):
+    print('📌 ENTRY: quantize_dense_layers')
     for name, dense_layer in subset.items():
         try:
             if quantization_type == 'gptq':
@@ -458,6 +487,7 @@ def quantize_dense_layers(subset, gptq, quantizers, args, quantization_type):
             gptq[name].free()
         except Exception as e:
             print(f"Error quantizing {name}: {e}")
+    print('📌 EXIT: quantize_dense_layers')
 
 # Add function to print quantization summary
 def print_quantization_summary(quantizers, model_name="OPT-125M"):
@@ -538,8 +568,10 @@ def compare_model_performance(original_model, quantized_model, testloader, args,
 
 # 1. Download OPT-125M model and tokenizer (TensorFlow version)
 def load_opt_model(model_name="facebook/opt-125m"):
+    print('📌 ENTRY: load_opt_model')
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = TFAutoModelForCausalLM.from_pretrained(model_name, from_pt=True)
+    print('📌 EXIT: load_opt_model')
     return model, tokenizer
 
 # 2. Download WikiText-2 dataset
@@ -563,6 +595,7 @@ def load_wikitext(nsamples=128):
 
 # 3. Prepare calibration data (tokenize and batch)
 def prepare_calib_data(dataset, tokenizer, nsamples=128, seqlen=128):
+    print('📌 ENTRY: prepare_calib_data')
     # Try 'text', then 'sentence', else raise error
     sample = dataset[0]
     if 'text' in sample:
@@ -572,12 +605,15 @@ def prepare_calib_data(dataset, tokenizer, nsamples=128, seqlen=128):
     else:
         raise KeyError("Neither 'text' nor 'sentence' found in dataset sample keys.")
     encodings = tokenizer(texts, return_tensors="np", padding="max_length", truncation=True, max_length=seqlen)
+    print('📌 EXIT: prepare_calib_data')
     return encodings["input_ids"]
 
 # 4. Dataloader generator
 def make_dataloader(encodings, batch_size=1):
+    print('📌 ENTRY: make_dataloader')
     for i in range(0, encodings.shape[0], batch_size):
         yield encodings[i:i+batch_size]
+    print('📌 EXIT: make_dataloader')
 
 # --- Evaluation loop, ported to Keras 3.0 ---
 def opt_eval_keras(model, testloader, args, tokenizer=None):
@@ -652,12 +688,14 @@ def opt_eval_keras(model, testloader, args, tokenizer=None):
     return ppl
 
 def find_parent_and_attr(root, target_layer):
+    print('📌 ENTRY: find_parent_and_attr')
     for attr_name in dir(root):
         if attr_name.startswith('_'):
             continue
         try:
             attr = getattr(root, attr_name)
             if attr is target_layer:
+                print('📌 EXIT: find_parent_and_attr - found')
                 return root, attr_name
         except Exception:
             continue
@@ -668,10 +706,13 @@ def find_parent_and_attr(root, target_layer):
                 continue  # Don't check self
             result = find_parent_and_attr(sub, target_layer)
             if result is not None:
+                print('📌 EXIT: find_parent_and_attr - found in submodule')
                 return result
+    print('📌 EXIT: find_parent_and_attr - not found')
     return None
 
 def patch_decoder_layer(layer):
+    print('📌 ENTRY: patch_decoder_layer')
     def flatten_dense_call(dense_layer, x, **kwargs):
         tensor_x = get_tensor(x)
         static_shape = getattr(tensor_x, 'shape', None)
@@ -730,6 +771,7 @@ def patch_decoder_layer(layer):
             print(f"[WARNING] Skipping residual addition: y.shape={y.shape}, x.shape={x.shape}")
         return {'hidden_states': y}
     layer.call = new_call.__get__(layer, layer.__class__)
+    print('📌 EXIT: patch_decoder_layer')
 
 def patch_attention_module(attn_module):
     """
@@ -737,6 +779,7 @@ def patch_attention_module(attn_module):
     k_proj, q_proj, v_proj, out_proj attributes (which may be hooks).
     During calibration, call all projections to trigger hooks and collect data, but skip actual attention computation.
     """
+    print('📌 ENTRY: patch_attention_module')
     # Save the original call method
     if not hasattr(attn_module, '_original_call'):
         attn_module._original_call = attn_module.call
@@ -762,9 +805,11 @@ def patch_attention_module(attn_module):
         return hidden_states
 
     attn_module.call = new_call.__get__(attn_module, attn_module.__class__)
+    print('📌 EXIT: patch_attention_module')
 
 def remove_all_dense_hooks(module):
     """Recursively replace all DenseHook instances in the model with their original dense_layer."""
+    print('📌 ENTRY: remove_all_dense_hooks')
     if hasattr(module, 'submodules'):
         for submodule in module.submodules:
             if isinstance(submodule, DenseHook):
@@ -775,8 +820,10 @@ def remove_all_dense_hooks(module):
                             setattr(module, attr_name, original_layer)
                             print(f"[GLOBAL CLEANUP] Restored {attr_name} in {module.__class__.__name__} to original Dense layer (id={id(original_layer)})")
             remove_all_dense_hooks(submodule)
+    print('📌 EXIT: remove_all_dense_hooks')
 
 if __name__ == "__main__":
+    print('🚀 ENTRY: main')
     parser = argparse.ArgumentParser()
     parser.add_argument('model', type=str, default="facebook/opt-125m", help='OPT model to load')
     parser.add_argument('--dataset', type=str, default='wikitext2', choices=['wikitext2', 'ptb'], help='Dataset for calibration/evaluation')
@@ -821,7 +868,9 @@ if __name__ == "__main__":
     # Add hidden_size to args
     args.hidden_size = model.config.hidden_size
     # Call opt_sequential_keras
+    print('📌 About to call opt_sequential_keras')
     quantizers = opt_sequential_keras(model, dataloader, args, quantization_type='gptq')
+    print('📌 Returned from opt_sequential_keras')
     print_quantization_summary(quantizers, "OPT-125M (TensorFlow)")
 
     # Test quantization effectiveness
@@ -875,4 +924,5 @@ if __name__ == "__main__":
             opt_eval_keras(model, testloader, args, tokenizer)
         except Exception as e:
             print(f"Error evaluating on {dataset_name}: {e}")
-            continue 
+            continue
+    print('🏁 EXIT: main') 
