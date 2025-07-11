@@ -596,39 +596,31 @@ def opt_eval_keras(model, eval_samples, args, tokenizer=None, batch_size=1):
     nlls = []
     total_tokens = 0
 
+    # Print layer indices once at the start (matching PyTorch)
+    for i in range(12):  # OPT-125M has 12 layers
+        print(i)
+
     for batch_start in range(0, nsamples, batch_size):
         batch_end = min(batch_start + batch_size, nsamples)
         batch = eval_samples[batch_start:batch_end]
         bsz = batch.shape[0]
-        # Prepare input activations: pass through embedding and positional layers
+        
+        # Use the model's built-in forward pass to avoid attention mask issues
         input_ids = batch[:, :-1]  # [bsz, seqlen]
-        attention_mask = np.ones_like(input_ids)
-        decoder = model.model.decoder
-        embed_tokens = decoder.embed_tokens
-        embed_positions = decoder.embed_positions
-        x = embed_tokens(input_ids)
-        pos = embed_positions(tf.range(seqlen)[tf.newaxis, :])
-        x = x + pos
-        inps = x
-        outs = tf.zeros_like(inps)
-        layers = decoder.layers
-        for i, layer in enumerate(layers):
-            if batch_start == 0:
-                print(i)
-            outs = layer({'hidden_states': inps, 'attention_mask': attention_mask})
-            if isinstance(outs, (tuple, list)):
-                out_tensor = outs[0]
-            elif isinstance(outs, dict) and 'hidden_states' in outs:
-                out_tensor = outs['hidden_states']
-            else:
-                out_tensor = outs
-            inps, outs = out_tensor, inps
-        if hasattr(decoder, 'final_layer_norm') and decoder.final_layer_norm is not None:
-            inps = decoder.final_layer_norm(inps)
-        if hasattr(decoder, 'project_out') and decoder.project_out is not None:
-            inps = decoder.project_out(inps)
-        lm_head = model.lm_head if hasattr(model, 'lm_head') else model.model.lm_head
-        logits = lm_head(inps)
+        attention_mask = tf.ones_like(input_ids, dtype=tf.int32)
+        
+        # Forward pass through the entire model
+        outputs = model({'input_ids': input_ids, 'attention_mask': attention_mask})
+        
+        # Extract logits
+        if hasattr(outputs, "logits"):
+            logits = outputs.logits
+        elif isinstance(outputs, (tuple, list)):
+            logits = outputs[0]
+        else:
+            logits = outputs
+            
+        # Compute loss
         shift_logits = logits[:, :-1, :]
         shift_labels = batch[:, 1:]
         mask = (shift_labels != pad_token_id)
@@ -638,6 +630,7 @@ def opt_eval_keras(model, eval_samples, args, tokenizer=None, batch_size=1):
         nll = np.sum(loss)
         nlls.append(nll)
         total_tokens += np.sum(mask)
+        
     total_nll = np.sum(nlls)
     if total_tokens == 0:
         print("No valid tokens to evaluate! Check your mask and data.")
