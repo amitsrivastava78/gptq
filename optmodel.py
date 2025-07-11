@@ -473,7 +473,7 @@ def quantize_dense_layers(subset, gptq, quantizers, args, quantization_type):
                 if hasattr(quantizers[name], 'scale'):
                     scale_val = quantizers[name].scale.numpy() if hasattr(quantizers[name].scale, 'numpy') else quantizers[name].scale
                     zero_val = quantizers[name].zero.numpy() if hasattr(quantizers[name].zero, 'numpy') else quantizers[name].zero
-                    print(f"  Scale: {scale_val}, Zero: {zero_val}")
+                    # print(f"  Scale: {scale_val}, Zero: {zero_val}")
                 else:
                     print(f"  No scale/zero attributes found")
             elif quantization_type == 'simple':
