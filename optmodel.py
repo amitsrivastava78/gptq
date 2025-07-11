@@ -587,7 +587,7 @@ def make_dataloader(encodings, batch_size=1):
         yield encodings[i:i+batch_size]
 
 # --- Evaluation loop, ported to Keras 3.0 ---
-def opt_eval_keras(model, eval_samples, args, tokenizer=None, batch_size=8):
+def opt_eval_keras(model, eval_samples, args, tokenizer=None, batch_size=1):
     import tensorflow as tf
     print('Evaluating ...')
     seqlen = args.seqlen
