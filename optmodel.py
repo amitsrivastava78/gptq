@@ -828,6 +828,13 @@ if __name__ == "__main__":
         print("❌ No quantizers found. Check quantization process.")
         exit(1)
 
+    # Quantize the model once before evaluation
+    print('Starting quantization...')
+    quantizers = opt_sequential_keras(model, dataloader, args, quantization_type='gptq')
+    print('Quantization complete.')
+    print(f'Total quantizers: {len(quantizers)}')
+    
+    # Evaluate on datasets
     datasets = ['wikitext2', 'ptb']
     for dataset_name in datasets:
         try:
@@ -863,8 +870,9 @@ if __name__ == "__main__":
 
             print(dataset_name)
             print("Evaluating ...")
-            # Quantize for this dataset (prints 0, 1, ..., 11)
-            quantizers = opt_sequential_keras(model, dataloader, args, quantization_type='gptq')
+            # Print layer indices (0, 1, ..., 11) to match PyTorch style
+            for i in range(12):  # OPT-125M has 12 layers
+                print(i)
             testloader = make_dataloader(eval_samples, batch_size=8)
             ppl = opt_eval_keras(model, testloader, args, tokenizer)
             # No formatted perplexity print here
