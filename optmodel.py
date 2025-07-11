@@ -322,7 +322,7 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
     # === 3. Quantize each transformer block ===
     quantizers = {}
     for i, layer in enumerate(layers):
-        print(f"Processing layer {i}: {type(layer)}")
+        print(i)  # PyTorch-style: print decoder layer index
         # a. Find Dense layers
         subset = find_layers_tf_opt(layer)
         print(f"Found {len(subset)} Dense layers in layer {i}")
@@ -595,7 +595,7 @@ def opt_eval_keras(model, testloader, args, tokenizer=None):
     seqlen = args.seqlen
     pad_token_id = tokenizer.pad_token_id if tokenizer else 0
     for i, batch in enumerate(testloader):
-        print(i)
+        # Do not print batch/sample index
         batch = np.array(batch)
         batch_size = batch.shape[0]
         nsamples += batch_size
@@ -840,10 +840,11 @@ if __name__ == "__main__":
             # Concatenate all texts
             texts = []
             for item in testset:
-                if 'text' in item:
-                    texts.append(item['text'])
-                elif 'sentence' in item:
-                    texts.append(item['sentence'])
+                if isinstance(item, dict):
+                    if 'text' in item:
+                        texts.append(item['text'])
+                    elif 'sentence' in item:
+                        texts.append(item['sentence'])
             full_text = " ".join(texts)
 
             # Tokenize as one long sequence
