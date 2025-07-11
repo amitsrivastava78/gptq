@@ -844,7 +844,7 @@ if __name__ == "__main__":
         
         if valid_quantizers > 0:
             print(f"\n✅ Quantization appears to be working ({valid_quantizers}/{len(quantizers)} valid quantizers)")
-            exit(1)
+            #exit(1)
         else:
             print(f"\n❌ No valid quantizers found. Quantization may not be working properly.")
             print("Exiting to debug quantization issues...")
