@@ -460,6 +460,7 @@ def quantize_dense_layers(subset, gptq, quantizers, args, quantization_type):
     for name, dense_layer in subset.items():
         try:
             if quantization_type == 'gptq':
+                print(f"Quantizing {name} with GPTQ...")
                 gptq[name].fasterquant(
                     blocksize=getattr(args, 'blocksize', 128),
                     percdamp=args.percdamp,
@@ -468,6 +469,13 @@ def quantize_dense_layers(subset, gptq, quantizers, args, quantization_type):
                     static_groups=getattr(args, 'static_groups', False)
                 )
                 quantizers[name] = gptq[name].quantizer
+                print(f"Quantizer for {name}: {type(quantizers[name])}")
+                if hasattr(quantizers[name], 'scale'):
+                    scale_val = quantizers[name].scale.numpy() if hasattr(quantizers[name].scale, 'numpy') else quantizers[name].scale
+                    zero_val = quantizers[name].zero.numpy() if hasattr(quantizers[name].zero, 'numpy') else quantizers[name].zero
+                    print(f"  Scale: {scale_val}, Zero: {zero_val}")
+                else:
+                    print(f"  No scale/zero attributes found")
             elif quantization_type == 'simple':
                 W = dense_layer.weights[0].numpy()
                 w_min = np.min(W)
@@ -877,60 +885,42 @@ if __name__ == "__main__":
     # Test quantization effectiveness
     print("\n=== Quantization Verification ===")
     
-    class WeightAnalyzer:
-        def __init__(self):
-            self.total_weight_change = 0
-            self.total_weights = 0
-            self.quantized_layers = 0
+    # Check quantization effectiveness using the quantizers dictionary
+    if quantizers:
+        print(f"\n✅ Quantization Verification:")
+        print(f"- Total quantized layers: {len(quantizers)}")
+        print(f"- Quantizer names: {list(quantizers.keys())}")
         
-        def analyze_weights_recursive(self, module, depth=0):
-            """Recursively analyze weights in all submodules"""
-            
-            # Check if this module has weights
-            if hasattr(module, 'weights') and module.weights:
-                for weight in module.weights:
-                    # Look for Dense layer weights (which are the ones we quantize)
-                    if isinstance(module, keras.layers.Dense) or 'dense' in weight.name.lower():
-                        weight_np = weight.numpy()
-                        weight_change = np.mean(np.abs(weight_np))
-                        weight_std = np.std(weight_np)
-                        self.total_weight_change += weight_change
-                        self.total_weights += 1
-                        self.quantized_layers += 1
-                        print(f"Weight {weight.name} in {module.name}: mean={weight_change:.6f}, std={weight_std:.6f}")
-            
-            # Recursively check submodules
-            if hasattr(module, 'submodules'):
-                for submodule in module.submodules:
-                    self.analyze_weights_recursive(submodule, depth + 1)
-            
-            # Also check layers attribute (for Sequential-like modules)
-            if hasattr(module, 'layers'):
-                for layer in module.layers:
-                    self.analyze_weights_recursive(layer, depth + 1)
-    
-    # Start analysis from the model root
-    analyzer = WeightAnalyzer()
-    analyzer.analyze_weights_recursive(model)
-    total_weight_change = analyzer.total_weight_change
-    total_weights = analyzer.total_weights
-    quantized_layers = analyzer.quantized_layers
-    
-    if total_weights > 0:
-        avg_weight_change = total_weight_change / total_weights
-        print(f"\nQuantization Summary:")
-        print(f"- Quantized layers: {quantized_layers}")
-        print(f"- Average weight magnitude: {avg_weight_change:.6f}")
-        print(f"- Total weights analyzed: {total_weights}")
+        # Check if quantizers have valid parameters
+        valid_quantizers = 0
+        for name, quantizer in quantizers.items():
+            if hasattr(quantizer, 'scale') and hasattr(quantizer, 'zero'):
+                # Check if scale and zero are not zero
+                scale_val = quantizer.scale.numpy() if hasattr(quantizer.scale, 'numpy') else quantizer.scale
+                zero_val = quantizer.zero.numpy() if hasattr(quantizer.zero, 'numpy') else quantizer.zero
+                
+                if isinstance(scale_val, np.ndarray):
+                    scale_val = float(scale_val.mean())
+                if isinstance(zero_val, np.ndarray):
+                    zero_val = float(zero_val.mean())
+                
+                if scale_val != 0.0 or zero_val != 0.0:
+                    valid_quantizers += 1
+                    print(f"  ✅ {name}: scale={scale_val:.6f}, zero={zero_val:.6f}")
+                else:
+                    print(f"  ⚠️  {name}: scale={scale_val:.6f}, zero={zero_val:.6f} (may not be properly quantized)")
+            else:
+                print(f"  ❌ {name}: missing scale or zero attributes")
         
-        if avg_weight_change < 0.001:
-            print("⚠️  WARNING: Very small weight changes detected. Quantization may not be working properly.")
-        elif avg_weight_change < 0.01:
-            print("⚠️  WARNING: Small weight changes detected. Check quantization parameters.")
+        if valid_quantizers > 0:
+            print(f"\n✅ Quantization appears to be working ({valid_quantizers}/{len(quantizers)} valid quantizers)")
         else:
-            print("✅ Quantization appears to be working (significant weight changes detected).")
+            print(f"\n❌ No valid quantizers found. Quantization may not be working properly.")
+            print("Exiting to debug quantization issues...")
+            exit(1)
     else:
-        print("❌ No quantizable weights found. Check layer discovery.")
+        print("❌ No quantizers found. Check quantization process.")
+        exit(1)
 
     datasets = ['wikitext2', 'ptb']
     for dataset_name in datasets:
