@@ -25,10 +25,10 @@ class GPTQ:
         if isinstance(self.layer, keras.layers.Conv2D):
             W = tf.reshape(W, [W.shape[0], -1])
         # Note: No Conv1D equivalent in Keras, so we skip that check
-        self.rows = int(W.shape[0])
-        self.columns = int(W.shape[1])
-        input_dim = int(W.shape[0])
-        output_dim = int(W.shape[1])
+        self.rows = W.shape[0]
+        self.columns = W.shape[1]
+        input_dim = W.shape[0]
+        output_dim = W.shape[1]
         self.H = tf.zeros((output_dim, output_dim), dtype=tf.float32)
         # print(f"The HESSAIN MATRIX shape is {self.H.shape}")
         self.nsamples = 0
@@ -195,6 +195,12 @@ class GPTQ:
                 # Use quantize function from quantkeras
                 from quantkeras import quantize
                 try:
+                    # Debug: check quantizer parameters
+                    if i1 + i < 5:  # Only print for first few iterations
+                        print(f"DEBUG: Quantizing {i1+i}, scale shape: {self.quantizer.scale.shape}, zero shape: {self.quantizer.zero.shape}")
+                        print(f"DEBUG: Scale sample: {self.quantizer.scale[:5].numpy()}")
+                        print(f"DEBUG: Zero sample: {self.quantizer.zero[:5].numpy()}")
+                    
                     q = quantize(
                         tf.expand_dims(w, 1), self.quantizer.scale, self.quantizer.zero, self.quantizer.maxq
                     )
@@ -204,6 +210,11 @@ class GPTQ:
                     if tf.reduce_any(tf.math.is_nan(q)):
                         print(f"WARNING: NaN in quantized values at {i1+i}. Using original weights.")
                         q = w
+                    else:
+                        # Check if quantization actually changed the values
+                        max_change = tf.reduce_max(tf.abs(w - q)).numpy()
+                        if max_change < 1e-6:
+                            print(f"WARNING: Quantization had no effect at {i1+i} (max change: {max_change})")
                         
                 except Exception as e:
                     print(f"Quantization failed at {i1+i}: {e}. Using original weights.")
@@ -232,6 +243,9 @@ class GPTQ:
 
             # Update the main weight matrix
             W = tf.concat([W[:, :i1], Q1, W[:, i2:]], axis=1)
+            
+            # Update the main losses matrix
+            Losses = tf.concat([Losses[:, :i1], Losses1, Losses[:, i2:]], axis=1)
 
         if actorder:
             W = tf.gather(W, invperm, axis=1)
