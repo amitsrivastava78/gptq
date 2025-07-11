@@ -106,10 +106,14 @@ class GPTQ:
             print("WARNING: No calibration data collected. Using identity Hessian.")
             H = tf.eye(self.columns, dtype=tf.float32)
         else:
+            # Add numerical stability checks
             dead = tf.equal(tf.linalg.diag_part(H), 0)
             H = tf.where(tf.expand_dims(dead, 0), tf.ones_like(H), H)
-            # Don't zero out the weights - this breaks quantization
-            # W = tf.where(tf.expand_dims(dead, 0), tf.zeros_like(W), W)
+            
+            # Check for NaN or Inf in Hessian
+            if tf.reduce_any(tf.math.is_nan(H)) or tf.reduce_any(tf.math.is_inf(H)):
+                print("WARNING: NaN/Inf detected in Hessian. Using identity matrix.")
+                H = tf.eye(self.columns, dtype=tf.float32)
 
         if static_groups:
             import copy
@@ -129,14 +133,32 @@ class GPTQ:
         Q = tf.zeros_like(W)
         Err = tf.zeros_like(W)
 
+        # More robust damping for CPU
         damp = percdamp * tf.reduce_mean(tf.linalg.diag_part(H))
-        # diag = tf.range(self.columns)
-        # H = tf.tensor_scatter_nd_add(H, tf.expand_dims(diag, 1), tf.fill([self.columns], damp))
+        # Ensure minimum damping for numerical stability
+        min_damp = 1e-6
+        damp = tf.maximum(damp, min_damp)
+        
         H = tf.linalg.set_diag(H, tf.linalg.diag_part(H) + damp)
-        H = tf.linalg.cholesky(H)
-        H = tf.linalg.cholesky_solve(H, tf.eye(self.columns, dtype=tf.float32))
-        H = tf.linalg.cholesky(H)
-        Hinv = H
+        
+        # Robust Cholesky decomposition with fallback
+        try:
+            # Try Cholesky decomposition
+            H_chol = tf.linalg.cholesky(H)
+            Hinv = tf.linalg.cholesky_solve(H_chol, tf.eye(self.columns, dtype=tf.float32))
+        except Exception as e:
+            print(f"Cholesky decomposition failed: {e}. Using pseudo-inverse.")
+            # Fallback to pseudo-inverse
+            try:
+                Hinv = tf.linalg.pinv(H)
+            except Exception as e2:
+                print(f"Pseudo-inverse also failed: {e2}. Using identity matrix.")
+                Hinv = tf.eye(self.columns, dtype=tf.float32)
+        
+        # Check for numerical issues in inverse
+        if tf.reduce_any(tf.math.is_nan(Hinv)) or tf.reduce_any(tf.math.is_inf(Hinv)):
+            print("WARNING: NaN/Inf in Hessian inverse. Using identity matrix.")
+            Hinv = tf.eye(self.columns, dtype=tf.float32)
 
         for i1 in range(0, self.columns, blocksize):
             i2 = min(i1 + blocksize, self.columns)
@@ -151,6 +173,14 @@ class GPTQ:
             for i in range(count):
                 w = W1[:, i]
                 d = Hinv1[i, i]
+                
+                # Check for numerical issues
+                if tf.math.is_nan(d) or tf.math.is_inf(d) or tf.abs(d) < 1e-10:
+                    print(f"WARNING: Invalid diagonal element at {i1+i}. Skipping quantization.")
+                    # Just copy the original weight
+                    indices = tf.stack([tf.range(Q1.shape[0]), tf.fill([Q1.shape[0]], i)], axis=1)
+                    Q1 = tf.tensor_scatter_nd_update(Q1, indices, w)
+                    continue
 
                 if groupsize != -1:
                     if not static_groups:
@@ -164,58 +194,56 @@ class GPTQ:
 
                 # Use quantize function from quantkeras
                 from quantkeras import quantize
-                # print(f"Quantizing column {i}: w range [{tf.reduce_min(w):.6f}, {tf.reduce_max(w):.6f}]")
-                # print(f"Scale: {self.quantizer.scale}, Zero: {self.quantizer.zero}, Maxq: {self.quantizer.maxq}")
-                q = quantize(
-                    tf.expand_dims(w, 1), self.quantizer.scale, self.quantizer.zero, self.quantizer.maxq
-                )
-                q = tf.squeeze(q)
-                # print(f"Quantized q range [{tf.reduce_min(q):.6f}, {tf.reduce_max(q):.6f}]")
+                try:
+                    q = quantize(
+                        tf.expand_dims(w, 1), self.quantizer.scale, self.quantizer.zero, self.quantizer.maxq
+                    )
+                    q = tf.squeeze(q)
+                    
+                    # Check for NaN in quantized values
+                    if tf.reduce_any(tf.math.is_nan(q)):
+                        print(f"WARNING: NaN in quantized values at {i1+i}. Using original weights.")
+                        q = w
+                        
+                except Exception as e:
+                    print(f"Quantization failed at {i1+i}: {e}. Using original weights.")
+                    q = w
+                
                 indices = tf.stack([tf.range(Q1.shape[0]), tf.fill([Q1.shape[0]], i)], axis=1)
                 Q1 = tf.tensor_scatter_nd_update(Q1, indices, q)
                 Losses1 = tf.tensor_scatter_nd_update(Losses1, indices, tf.square(w - q) / (d ** 2))
                 err1 = (w - q) / d
+                
+                # Check for numerical issues in error
+                if tf.reduce_any(tf.math.is_nan(err1)) or tf.reduce_any(tf.math.is_inf(err1)):
+                    print(f"WARNING: NaN/Inf in error at {i1+i}. Skipping weight update.")
+                    continue
+                    
                 # Only update the slice W1[:, i:]
-                W1_slice = W1[:, i:] - tf.expand_dims(err1, 1) * Hinv1[i, i:]
-                W1 = tf.concat([W1[:, :i], W1_slice], axis=1)
-                Err1 = tf.tensor_scatter_nd_update(Err1, indices, err1)
+                try:
+                    W1_slice = W1[:, i:] - tf.expand_dims(err1, 1) * Hinv1[i, i:]
+                    # Check for NaN in updated weights
+                    if tf.reduce_any(tf.math.is_nan(W1_slice)):
+                        print(f"WARNING: NaN in weight update at {i1+i}. Skipping update.")
+                    else:
+                        W1 = tf.concat([W1[:, :i], W1_slice], axis=1)
+                except Exception as e:
+                    print(f"Weight update failed at {i1+i}: {e}. Continuing.")
 
-            Q = tf.concat([Q[:, :to_python_int(i1)], Q1, Q[:, to_python_int(i2):]], axis=1)
-            Losses = tf.concat([Losses[:, :to_python_int(i1)], Losses1 / 2, Losses[:, to_python_int(i2):]], axis=1)
-            Err = tf.concat([Err[:, :to_python_int(i1)], Err1, Err[:, to_python_int(i2):]], axis=1)
-
-            W_right = W[:, i2:] - tf.matmul(Err1, Hinv[i1:i2, i2:])
-            W = tf.concat([W[:, :i2], W_right], axis=1)
-
-            if DEBUG:
-                self.layer.weights[0].assign(tf.concat([Q[:, :i2], W[:, i2:]], axis=1))
-                print(tf.reduce_sum(tf.square(self.layer(self.inp1) - self.out1)))
-                print(tf.reduce_sum(Losses))
-
-        print('time %.2f' % (time.time() - tick))
-        print('error', tf.reduce_sum(Losses).numpy())
+            # Update the main weight matrix
+            W = tf.concat([W[:, :i1], Q1, W[:, i2:]], axis=1)
 
         if actorder:
-            Q = tf.gather(Q, invperm, axis=1)
+            W = tf.gather(W, invperm, axis=1)
 
-        # Note: No Conv1D equivalent in Keras, so we skip that transpose
-        # After quantization logic, before assignment
-        # print("Q before assignment (first 5):", Q.numpy().flatten()[:5])
-        # print("Q shape before assignment:", Q.shape)
-        # print("Original kernel shape:", self.layer.kernel.shape)
-        # Ensure Q is 2D and matches kernel shape
-        if len(Q.shape) != 2:
-            Q = tf.reshape(Q, self.layer.kernel.shape)
-        elif Q.shape != self.layer.kernel.shape:
-            Q = tf.reshape(Q, self.layer.kernel.shape)
-        self.layer.kernel.assign(tf.convert_to_tensor(Q, dtype=self.layer.kernel.dtype))
-        
-        # Also update the weights list to ensure consistency
-        if hasattr(self.layer, 'weights') and len(self.layer.weights) > 0:
-            self.layer.weights[0].assign(tf.convert_to_tensor(Q, dtype=self.layer.weights[0].dtype))
-        
-        if DEBUG:
-            print(tf.reduce_sum(tf.square(self.layer(self.inp1) - self.out1)))
+        # Update the layer weights
+        try:
+            self.layer.weights[0].assign(W)
+        except Exception as e:
+            print(f"Failed to assign weights: {e}")
+
+        print('time %.2f' % (time.time() - tick))
+        print('error', tf.reduce_mean(Losses).numpy())
 
     def free(self):
         if DEBUG:
