@@ -63,7 +63,6 @@ def find_layers(module):
     def _find_layers_recursive(module, name=''):
         if isinstance(module, keras.layers.Dense):
             layers[name] = module
-            print(f"Found Dense layer: {name} -> {module.name}")
         # Check for specific OPT model structure - TensorFlow OPT has different structure
         elif hasattr(module, 'layers'):
             for i, child in enumerate(module.layers):
@@ -80,7 +79,6 @@ def find_layers(module):
                 attr = getattr(module, attr_name)
                 if isinstance(attr, keras.layers.Dense):
                     layers[f"{name}.{attr_name}" if name else attr_name] = attr
-                    print(f"Found Dense layer in {attr_name}: {name}.{attr_name}" if name else attr_name)
                 elif hasattr(attr, 'submodules'):
                     _find_layers_recursive(attr, f"{name}.{attr_name}" if name else attr_name)
                 elif hasattr(attr, 'layers'):
@@ -95,12 +93,10 @@ def find_layers(module):
     return layers
 
 def find_layers_tf_opt(module):
-    print('📌 ENTRY: find_layers_tf_opt')
     layers = {}
     for layer in module.submodules:
         if 'dense' in type(layer).__name__.lower() or 'dense' in str(type(layer)).lower():
             layers[layer.name] = layer
-    print(f'📌 EXIT: find_layers_tf_opt - found {len(layers)} layers')
     return layers
 
 def debug_layer_structure(module, max_depth=3, current_depth=0):
@@ -276,7 +272,6 @@ def opt_sequential_keras(model, dataloader, args, quantization_type='gptq'):
       4. Remove all DenseHook instances from the model
     """
     print('Starting ...')
-    print(f'[DEBUG] nsamples: {getattr(args, "nsamples", "unknown")}')
 
     # === 1. Patch model layers for calibration ===
     def patch_all_decoder_layers(model):
@@ -430,8 +425,11 @@ def quantize_dense_layers(subset, gptq, quantizers, args, quantization_type, lay
     for name, dense_layer in subset.items():
         try:
             if quantization_type == 'gptq':
+                print(f"Quantizing layer {layer_index}, {name}")
                 # Get original weight info
                 W = dense_layer.weights[0].numpy()
+                print(f"Original weight shape: {W.shape}")
+                print(f"Original weight range: [{W.min():.6f}, {W.max():.6f}]")
                 
                 gptq[name].fasterquant(
                     blocksize=getattr(args, 'blocksize', 128),
@@ -444,6 +442,8 @@ def quantize_dense_layers(subset, gptq, quantizers, args, quantization_type, lay
                 
                 # Get quantized weight info
                 quantized_W = gptq[name].quantizer.quantize(W)
+                print(f"Quantized weight range: [{quantized_W.min():.6f}, {quantized_W.max():.6f}]")
+                print(f"Average weight change: {np.mean(np.abs(W - quantized_W)):.6f}")
                 
             elif quantization_type == 'simple':
                 W = dense_layer.weights[0].numpy()
