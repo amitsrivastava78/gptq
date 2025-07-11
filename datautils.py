@@ -31,13 +31,30 @@ def get_wikitext2(nsamples, seed, seqlen, model):
 
 def get_ptb(nsamples, seed, seqlen, model):
     from datasets import load_dataset
-    traindata = load_dataset('ptb_text_only', 'penn_treebank', split='train')
-    valdata = load_dataset('ptb_text_only', 'penn_treebank', split='validation')
-
     from transformers import AutoTokenizer 
+    
+    try:
+        # Try the new way first
+        traindata = load_dataset('ptb-text-only/ptb_text_only', split='train')
+        valdata = load_dataset('ptb-text-only/ptb_text_only', split='validation')
+        text_field = 'sentence'
+    except Exception as e1:
+        try:
+            # Try alternative dataset
+            traindata = load_dataset('ptb_text_only', split='train')
+            valdata = load_dataset('ptb_text_only', split='validation')
+            text_field = 'sentence'
+        except Exception as e2:
+            print(f"PTB dataset not available. Using WikiText-2 as fallback.")
+            print(f"Original errors: {e1}, {e2}")
+            # Fallback to WikiText-2
+            traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
+            valdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
+            text_field = 'text'
+
     tokenizer = AutoTokenizer.from_pretrained(model, use_fast=False)
-    trainenc = tokenizer("\n\n".join(traindata['sentence']), return_tensors='pt')
-    testenc = tokenizer("\n\n".join(valdata['sentence']), return_tensors='pt')
+    trainenc = tokenizer("\n\n".join(traindata[text_field]), return_tensors='pt')
+    testenc = tokenizer("\n\n".join(valdata[text_field]), return_tensors='pt')
 
     import random
     random.seed(seed)
@@ -97,13 +114,30 @@ def get_c4(nsamples, seed, seqlen, model):
 
 def get_ptb_new(nsamples, seed, seqlen, model):
     from datasets import load_dataset
-    traindata = load_dataset('ptb_text_only', 'penn_treebank', split='train')
-    testdata = load_dataset('ptb_text_only', 'penn_treebank', split='test')
-
     from transformers import AutoTokenizer
+    
+    try:
+        # Try the new way first
+        traindata = load_dataset('ptb-text-only/ptb_text_only', split='train')
+        testdata = load_dataset('ptb-text-only/ptb_text_only', split='test')
+        text_field = 'sentence'
+    except Exception as e1:
+        try:
+            # Try alternative dataset
+            traindata = load_dataset('ptb_text_only', split='train')
+            testdata = load_dataset('ptb_text_only', split='test')
+            text_field = 'sentence'
+        except Exception as e2:
+            print(f"PTB dataset not available. Using WikiText-2 as fallback.")
+            print(f"Original errors: {e1}, {e2}")
+            # Fallback to WikiText-2
+            traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
+            testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
+            text_field = 'text'
+
     tokenizer = AutoTokenizer.from_pretrained(model, use_fast=False)
-    trainenc = tokenizer(" ".join(traindata['sentence']), return_tensors='pt')
-    testenc = tokenizer(" ".join(testdata['sentence']), return_tensors='pt')
+    trainenc = tokenizer(" ".join(traindata[text_field]), return_tensors='pt')
+    testenc = tokenizer(" ".join(testdata[text_field]), return_tensors='pt')
 
     import random
     random.seed(seed)
