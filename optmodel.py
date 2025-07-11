@@ -429,7 +429,7 @@ def quantize_dense_layers(subset, gptq, quantizers, args, quantization_type, lay
                 # Get original weight info
                 W = dense_layer.weights[0].numpy()
                 print(f"Original weight shape: {W.shape}")
-                print(f"Original weight range: [{W.min():.6f}, {W.max():.6f}]")
+                print(f"Original weight range: [{tf.reduce_min(W).numpy():.6f}, {tf.reduce_max(W).numpy():.6f}]")
                 
                 gptq[name].fasterquant(
                     blocksize=getattr(args, 'blocksize', 128),
@@ -442,7 +442,7 @@ def quantize_dense_layers(subset, gptq, quantizers, args, quantization_type, lay
                 
                 # Get quantized weight info
                 quantized_W = gptq[name].quantizer.quantize(W)
-                print(f"Quantized weight range: [{quantized_W.min():.6f}, {quantized_W.max():.6f}]")
+                print(f"Quantized weight range: [{tf.reduce_min(quantized_W).numpy():.6f}, {tf.reduce_max(quantized_W).numpy():.6f}]")
                 print(f"Average weight change: {np.mean(np.abs(W - quantized_W)):.6f}")
                 
             elif quantization_type == 'simple':

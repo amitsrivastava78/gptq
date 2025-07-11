@@ -30,7 +30,7 @@ class GPTQ:
         input_dim = int(W.shape[0])
         output_dim = int(W.shape[1])
         self.H = tf.zeros((output_dim, output_dim), dtype=tf.float32)
-        print(f"The HESSAIN MATRIX shape is {self.H.shape}")
+        # print(f"The HESSAIN MATRIX shape is {self.H.shape}")
         self.nsamples = 0
         self.quantizer = None
 
@@ -200,9 +200,9 @@ class GPTQ:
 
         # Note: No Conv1D equivalent in Keras, so we skip that transpose
         # After quantization logic, before assignment
-        print("Q before assignment (first 5):", Q.numpy().flatten()[:5])
-        print("Q shape before assignment:", Q.shape)
-        print("Original kernel shape:", self.layer.kernel.shape)
+        # print("Q before assignment (first 5):", Q.numpy().flatten()[:5])
+        # print("Q shape before assignment:", Q.shape)
+        # print("Original kernel shape:", self.layer.kernel.shape)
         # Ensure Q is 2D and matches kernel shape
         if len(Q.shape) != 2:
             Q = tf.reshape(Q, self.layer.kernel.shape)
