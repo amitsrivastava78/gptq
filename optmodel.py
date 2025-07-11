@@ -907,8 +907,6 @@ if __name__ == "__main__":
                 if scale_val != 0.0 or zero_val != 0.0:
                     valid_quantizers += 1
                     # print(f"  ✅ {name}: scale={scale_val:.6f}, zero={zero_val:.6f}")
-                else:
-                    # print(f"  ⚠️  {name}: scale={scale_val:.6f}, zero={zero_val:.6f} (may not be properly quantized)")
             else:
                 print(f"  ❌ {name}: missing scale or zero attributes")
         
