@@ -438,7 +438,8 @@ def quantize_dense_layers(subset, gptq, quantizers, args, quantization_type, lay
                     actorder=getattr(args, 'act_order', False),
                     static_groups=getattr(args, 'static_groups', False)
                 )
-                quantizers[name] = gptq[name].quantizer
+                # Use unique key for each quantizer
+                quantizers[f"layer{layer_index}.{name}"] = gptq[name].quantizer
                 
                 # Get quantized weight info
                 quantized_W = gptq[name].quantizer.quantize(W)
@@ -456,7 +457,7 @@ def quantize_dense_layers(subset, gptq, quantizers, args, quantization_type, lay
                 quantized = np.clip(quantized, 0, max_val)
                 dequantized = quantized.astype(np.float32) * scale + zero_point
                 dense_layer.weights[0].assign(dequantized)
-                quantizers[name] = {
+                quantizers[f"layer{layer_index}.{name}"] = {
                     'scale': scale,
                     'zero': zero_point,
                     'maxq': max_val
