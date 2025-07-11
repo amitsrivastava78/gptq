@@ -30,9 +30,9 @@ class GPTQ:
         self.nsamples = 0
 
     def add_batch(self, inp, out):
-        print("Inside GPTQ add_batch")
-        print("Input shape:", inp.shape)
-        print("Output shape:", out.shape)
+        # print("Inside GPTQ add_batch")
+        # print("Input shape:", inp.shape)
+        # print("Output shape:", out.shape)
 
         # For Keras Dense layers, accumulate Hessian over the OUTPUT dimension
         if len(out.shape) == 3:
@@ -40,9 +40,9 @@ class GPTQ:
         out = tf.transpose(out)  # [output_features, batch*seq]
         num_new_samples = out.shape[1]
 
-        print("self.H shape:", self.H.shape)
-        print("out shape:", out.shape)
-        print("matmul shape:", tf.matmul(out, tf.transpose(out)).shape)
+        # print("self.H shape:", self.H.shape)
+        # print("out shape:", out.shape)
+        # print("matmul shape:", tf.matmul(out, tf.transpose(out)).shape)
 
         # 1. Running average update (use previous nsamples)
         self.H = self.H * (self.nsamples / (self.nsamples + num_new_samples))

@@ -59,9 +59,9 @@ class GPTQ:
         if inp is None or out is None:
             print("add_batch received None input or output, skipping.")
             return
-        print("Inside GPTQ add_batch")
-        print("Input shape:", inp.shape)
-        print("Output shape:", out.shape)
+        # print("Inside GPTQ add_batch")
+        # print("Input shape:", inp.shape)
+        # print("Output shape:", out.shape)
         
         # For Keras Dense layers, we want to accumulate the Hessian over the OUTPUT dimension
         # The Hessian should be (output_dim, output_dim)
@@ -74,14 +74,14 @@ class GPTQ:
         out = tf.transpose(out)  # [output_features, batch*seq]
         num_new_samples = out.shape[1]  # number of columns = number of samples
         
-        print("self.H shape:", self.H.shape)
-        print("out shape:", out.shape)
-        print("matmul shape:", tf.matmul(out, tf.transpose(out)).shape)
+        # print("self.H shape:", self.H.shape)
+        # print("out shape:", out.shape)
+        # print("matmul shape:", tf.matmul(out, tf.transpose(out)).shape)
         
         # 3. Update Hessian with running average
         self.H = self.H * (self.nsamples / (self.nsamples + num_new_samples))
         self.nsamples += num_new_samples
-        print(f"SAMLPLE value is {self.nsamples}")
+        # print(f"SAMLPLE value is {self.nsamples}")
         
         # 4. Scale and accumulate
         out = tf.sqrt(2.0 / tf.cast(self.nsamples, tf.float32)) * out
