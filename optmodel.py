@@ -688,14 +688,14 @@ def opt_eval_keras(model, testloader, args, tokenizer=None):
     return ppl
 
 def find_parent_and_attr(root, target_layer):
-    print('📌 ENTRY: find_parent_and_attr')
+    # print('📌 ENTRY: find_parent_and_attr')
     for attr_name in dir(root):
         if attr_name.startswith('_'):
             continue
         try:
             attr = getattr(root, attr_name)
             if attr is target_layer:
-                print('📌 EXIT: find_parent_and_attr - found')
+                # print('📌 EXIT: find_parent_and_attr - found')
                 return root, attr_name
         except Exception:
             continue
@@ -706,9 +706,9 @@ def find_parent_and_attr(root, target_layer):
                 continue  # Don't check self
             result = find_parent_and_attr(sub, target_layer)
             if result is not None:
-                print('📌 EXIT: find_parent_and_attr - found in submodule')
+                # print('📌 EXIT: find_parent_and_attr - found in submodule')
                 return result
-    print('📌 EXIT: find_parent_and_attr - not found')
+    # print('📌 EXIT: find_parent_and_attr - not found')
     return None
 
 def patch_decoder_layer(layer):
@@ -769,7 +769,8 @@ def patch_decoder_layer(layer):
             print("[DEBUG] after MLP residual add:", y.shape)
         else:
             print(f"[WARNING] Skipping residual addition: y.shape={y.shape}, x.shape={x.shape}")
-        return {'hidden_states': y}
+        # Return a tuple with (hidden_states, None, None) to match expected format
+        return (y, None, None)
     layer.call = new_call.__get__(layer, layer.__class__)
     print('📌 EXIT: patch_decoder_layer')
 
@@ -809,7 +810,7 @@ def patch_attention_module(attn_module):
 
 def remove_all_dense_hooks(module):
     """Recursively replace all DenseHook instances in the model with their original dense_layer."""
-    print('📌 ENTRY: remove_all_dense_hooks')
+    # print('📌 ENTRY: remove_all_dense_hooks')
     if hasattr(module, 'submodules'):
         for submodule in module.submodules:
             if isinstance(submodule, DenseHook):
@@ -820,7 +821,7 @@ def remove_all_dense_hooks(module):
                             setattr(module, attr_name, original_layer)
                             print(f"[GLOBAL CLEANUP] Restored {attr_name} in {module.__class__.__name__} to original Dense layer (id={id(original_layer)})")
             remove_all_dense_hooks(submodule)
-    print('📌 EXIT: remove_all_dense_hooks')
+    # print('📌 EXIT: remove_all_dense_hooks')
 
 if __name__ == "__main__":
     print('🚀 ENTRY: main')
