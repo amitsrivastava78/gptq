@@ -587,49 +587,74 @@ def make_dataloader(encodings, batch_size=1):
         yield encodings[i:i+batch_size]
 
 # --- Evaluation loop, ported to Keras 3.0 ---
-def opt_eval_keras(model, testloader, args, tokenizer=None):
-    # PyTorch-style: only print perplexity at the end, and error/warning if NaN or no valid tokens
-    nsamples = 0
-    nlls = []
-    total_tokens = 0
+def opt_eval_keras(model, eval_samples, args, tokenizer=None):
+    import tensorflow as tf
+    print('Evaluating ...')
     seqlen = args.seqlen
+    nsamples = eval_samples.shape[0]
     pad_token_id = tokenizer.pad_token_id if tokenizer else 0
-    for i, batch in enumerate(testloader):
-        # Do not print batch/sample index
-        batch = np.array(batch)
-        batch_size = batch.shape[0]
-        nsamples += batch_size
-        outputs = model(batch)
-        # Extract logits tensor
-        if hasattr(outputs, "logits"):
-            logits_tensor = outputs.logits
-        elif isinstance(outputs, (tuple, list)):
-            logits_tensor = outputs[0]
+
+    # Prepare input activations: pass through embedding and positional layers
+    # For TF OPT, input is dict with 'input_ids' and 'attention_mask'
+    # We'll mimic the PyTorch logic as closely as possible
+    # 1. Embed tokens
+    input_ids = eval_samples[:, :-1]  # [nsamples, seqlen]
+    attention_mask = np.ones_like(input_ids)
+    inputs = {'input_ids': input_ids, 'attention_mask': attention_mask}
+    # Get embedding output (first layer input)
+    # For TF OPT, the embedding is usually model.model.decoder.embed_tokens
+    decoder = model.model.decoder
+    embed_tokens = decoder.embed_tokens
+    embed_positions = decoder.embed_positions
+    x = embed_tokens(input_ids)
+    pos = embed_positions(tf.range(seqlen)[tf.newaxis, :])
+    x = x + pos
+    # x: [nsamples, seqlen, hidden_size]
+    inps = x
+    outs = tf.zeros_like(inps)
+
+    # 2. Forward through each decoder layer, print index
+    layers = decoder.layers
+    for i, layer in enumerate(layers):
+        print(i)
+        outs = layer({'hidden_states': inps, 'attention_mask': attention_mask})
+        # outs may be tuple/list/dict, extract hidden_states
+        if isinstance(outs, (tuple, list)):
+            out_tensor = outs[0]
+        elif isinstance(outs, dict) and 'hidden_states' in outs:
+            out_tensor = outs['hidden_states']
         else:
-            logits_tensor = outputs
-        shift_logits = logits_tensor[:, :-1, :]
-        shift_labels = batch[:, 1:]
-        mask = (shift_labels != pad_token_id)
-        loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
-        loss = loss_fn(shift_labels, shift_logits)
-        loss = loss * mask
-        nll = np.sum(loss)
-        nlls.append(nll)
-        batch_tokens = np.sum(mask)
-        total_tokens += batch_tokens
-        if np.isnan(loss).any():
-            print("NaN detected in loss!")
-            exit(1)
-    total_nll = np.sum(nlls)
+            out_tensor = outs
+        # Swap inps/outs for next layer
+        inps, outs = out_tensor, inps
+
+    # 3. Final layer norm and project_out if present
+    if hasattr(decoder, 'final_layer_norm') and decoder.final_layer_norm is not None:
+        inps = decoder.final_layer_norm(inps)
+    if hasattr(decoder, 'project_out') and decoder.project_out is not None:
+        inps = decoder.project_out(inps)
+    # 4. LM head
+    lm_head = model.lm_head if hasattr(model, 'lm_head') else model.model.lm_head
+    logits = lm_head(inps)
+
+    # 5. Compute loss and perplexity
+    shift_logits = logits[:, :-1, :]
+    shift_labels = eval_samples[:, 1:]
+    mask = (shift_labels != pad_token_id)
+    loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
+    loss = loss_fn(shift_labels, shift_logits)
+    loss = loss * mask
+    nll = np.sum(loss)
+    total_tokens = np.sum(mask)
     if total_tokens == 0:
         print("No valid tokens to evaluate! Check your mask and data.")
         return float('inf')
-    avg_loss = total_nll / total_tokens
+    avg_loss = nll / total_tokens
     if np.isnan(avg_loss):
         print("NaN detected in average loss!")
         exit(1)
     ppl = np.exp(avg_loss)
-    print(ppl)  # PyTorch-style: print perplexity as raw float
+    print(ppl)
     return ppl
 
 def find_parent_and_attr(root, target_layer):
@@ -828,13 +853,7 @@ if __name__ == "__main__":
         print("❌ No quantizers found. Check quantization process.")
         exit(1)
 
-    # Quantize the model once before evaluation
-    print('Starting quantization...')
-    quantizers = opt_sequential_keras(model, dataloader, args, quantization_type='gptq')
-    print('Quantization complete.')
-    print(f'Total quantizers: {len(quantizers)}')
-    
-    # Evaluate on datasets
+     # Evaluate on datasets
     datasets = ['wikitext2', 'ptb']
     for dataset_name in datasets:
         try:
@@ -873,8 +892,7 @@ if __name__ == "__main__":
             # Print layer indices (0, 1, ..., 11) to match PyTorch style
             for i in range(12):  # OPT-125M has 12 layers
                 print(i)
-            testloader = make_dataloader(eval_samples, batch_size=8)
-            ppl = opt_eval_keras(model, testloader, args, tokenizer)
+            ppl = opt_eval_keras(model, eval_samples, args, tokenizer)
             # No formatted perplexity print here
         except Exception as e:
             print(f"Error evaluating on {dataset_name}: {e}")
