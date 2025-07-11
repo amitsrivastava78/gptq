@@ -595,6 +595,7 @@ def opt_eval_keras(model, testloader, args, tokenizer=None):
     seqlen = args.seqlen
     pad_token_id = tokenizer.pad_token_id if tokenizer else 0
     for i, batch in enumerate(testloader):
+        print(i)
         batch = np.array(batch)
         batch_size = batch.shape[0]
         nsamples += batch_size
@@ -859,6 +860,7 @@ if __name__ == "__main__":
             eval_samples = np.stack(eval_samples)
 
             print(dataset_name)
+            print("Evaluating ...")
             testloader = make_dataloader(eval_samples, batch_size=8)
             ppl = opt_eval_keras(model, testloader, args, tokenizer)
             print(f"Perplexity: {ppl:.2f}")
